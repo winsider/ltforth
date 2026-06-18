@@ -14,7 +14,7 @@
 #define FORTH_FALSE ((cell_t)0)
 #define DICTIONARY_WORDS 64
 #define DICTIONARY_NAME_BYTES 512
-#define WORD_BODY_SIZE 64
+#define INSTRUCTION_SPACE_SIZE 512
 
 /* TYPES */
 typedef struct
@@ -72,7 +72,7 @@ struct Word
 
         struct
         {
-            Word* body[WORD_BODY_SIZE];
+            Instruction* first;
             idx_t length;
         } colon;
     } impl;
@@ -102,6 +102,8 @@ static idx_t dictionary_word_count = 0;
 static char dictionary_names[DICTIONARY_NAME_BYTES];
 static idx_t dictionary_name_pos = 0;
 
+static Instruction instruction_space[INSTRUCTION_SPACE_SIZE];
+static idx_t instruction_count = 0;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
@@ -148,6 +150,319 @@ static int pop(cell_t* value)
 {
     REQUIRE_STACK(1);
     POP_UNCHECKED(*value);
+    return TRUE;
+}
+
+static Instruction* allot_instruction(void)
+{
+    if (instruction_count >= INSTRUCTION_SPACE_SIZE)
+    {
+        return NULL;
+    }
+
+    return &instruction_space[instruction_count++];
+}
+
+static Word* allot_word(void)
+{
+    /* TODO: optimize with reusing existing words */
+    if (dictionary_word_count >= DICTIONARY_WORDS)
+    {
+        return NULL;
+    }
+
+    return &dictionary_words[dictionary_word_count++];
+}
+
+static int copy_name(Token* dest, const Token* src)
+{
+    if (dictionary_name_pos + src->length > DICTIONARY_NAME_BYTES)
+    {
+        return FALSE;
+    }
+
+    dest->start = &dictionary_names[dictionary_name_pos];
+    dest->length = src->length;
+
+    memcpy(&dictionary_names[dictionary_name_pos], src->start, src->length);
+    dictionary_name_pos += src->length;
+
+    return TRUE;
+}
+
+static void add_word(Word* word)
+{
+    word->previous = latest_word;
+    latest_word = word;
+}
+
+static int text_equal(const Text* t1, const Text* t2)
+{
+    return ((t1->length == t2->length) &&
+            (strncmp(t1->start, t2->start, t1->length) == 0));
+}
+
+static Word* find_word(const Token* token)
+{
+    Word* word;
+    for (word = latest_word; word != NULL; word = word->previous)
+    {
+        if (text_equal(&word->name, token))
+        {
+            return word;
+        }
+    }
+    return NULL;
+}
+
+static int parse_number(const Token* token, cell_t* value)
+{
+    idx_t i = 0;
+    int negative = FALSE;
+    ucell_t result = 0;
+
+    if (token->length == 0)
+    {
+        return FALSE;
+    }
+
+    if (token->start[i] == '-')
+    {
+        negative = TRUE;
+        ++i;
+    }
+    else if (token->start[i] == '+')
+    {
+        ++i;
+    }
+
+    if (i == token->length)
+    {
+        return FALSE;
+    }
+
+    while (i < token->length)
+    {
+        unsigned char c = (unsigned char)token->start[i];
+
+        if (!isdigit(c))
+        {
+            return FALSE;
+        }
+
+        result = (ucell_t)(result * 10u + (ucell_t)(c - '0'));
+        ++i;
+    }
+
+    if (negative)
+    {
+        *value = (cell_t)(0u - result);
+    }
+    else
+    {
+        *value = (cell_t)result;
+    }
+
+    return TRUE;
+}
+
+static void skip_ignored()
+{
+    for (;;)
+    {
+        // skip whitespace
+        while (isspace((unsigned char)input_buffer[tokeniser_pos]))
+        {
+            ++tokeniser_pos;
+        }
+
+        // skip comment
+        if (input_buffer[tokeniser_pos] == '\\')
+        {
+            do
+            {
+                tokeniser_pos++;
+            } while (input_buffer[tokeniser_pos] != '\n' &&
+                     input_buffer[tokeniser_pos] != '\0');
+            continue;
+        }
+        break;
+    }
+}
+
+static int compile_word(Word* word)
+{
+    Instruction* instruction;
+
+    if (current_definition == NULL)
+    {
+        error("no current definition");
+        return FALSE;
+    }
+
+    instruction = allot_instruction();
+    if (instruction == NULL)
+    {
+        error("instruction space full");
+        return FALSE;
+    }
+
+    if (current_definition->impl.colon.length == 0)
+    {
+        current_definition->impl.colon.first = instruction;
+    }
+
+    instruction->op = OP_CALL;
+    instruction->arg.word = word;
+
+    ++current_definition->impl.colon.length;
+
+    return TRUE;
+}
+
+static int compile_literal(cell_t value)
+{
+    Instruction* instruction;
+
+    if (current_definition == NULL)
+    {
+        error("no current definition");
+        return FALSE;
+    }
+
+    instruction = allot_instruction();
+    if (instruction == NULL)
+    {
+        error("instruction space full");
+        return FALSE;
+    }
+
+    if (current_definition->impl.colon.length == 0)
+    {
+        current_definition->impl.colon.first = instruction;
+    }
+
+    instruction->op = OP_LIT;
+    instruction->arg.literal = value;
+
+    ++current_definition->impl.colon.length;
+
+    return TRUE;
+}
+
+static int execute_colon_word(Word* word);
+
+static int execute_word(Word* word)
+{
+    if (word->kind == WORD_BUILTIN)
+    {
+        return word->impl.builtin();
+    }
+
+    if (word->kind == WORD_COLON)
+    {
+        return execute_colon_word(word);
+    }
+
+    error("invalid word kind");
+    return FALSE;
+}
+
+static int execute_colon_word(Word* word)
+{
+    idx_t i;
+    Instruction* instruction;
+
+    for (i = 0; i < word->impl.colon.length; ++i)
+    {
+        instruction = &word->impl.colon.first[i];
+
+        switch (instruction->op)
+        {
+            case OP_CALL:
+                if (!execute_word(instruction->arg.word))
+                {
+                    return FALSE;
+                }
+                break;
+
+            case OP_LIT:
+                if (!push(instruction->arg.literal))
+                {
+                    return FALSE;
+                }
+                break;
+
+            default:
+                error("invalid instruction");
+                return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+static int process_token(const Token* token)
+{
+    Word* word;
+    cell_t value;
+
+    word = find_word(token);
+
+    if (state == STATE_INTERPRET)
+    {
+        if (word != NULL)
+        {
+            return execute_word(word);
+        }
+
+        if (parse_number(token, &value))
+        {
+            return push(value);
+        }
+
+        error("unknown word");
+        return FALSE;
+    }
+
+    /* STATE_COMPILE */
+
+    if (word != NULL)
+    {
+        if (word->flags & WORD_FLAG_IMMEDIATE)
+        {
+            return execute_word(word);
+        }
+
+        return compile_word(word);
+    }
+
+    if (parse_number(token, &value))
+    {
+        return compile_literal(value);
+    }
+
+    error("unknown word while compiling");
+    return FALSE;
+}
+
+static int next_token(Token* out)
+{
+    skip_ignored();
+    if (!has_more_input())
+    {
+        return FALSE;
+    }
+
+    out->start = input_buffer + tokeniser_pos;
+    out->length = 0;
+
+    do
+    {
+        tokeniser_pos++;
+        out->length++;
+    } while (!isspace((unsigned char)input_buffer[tokeniser_pos]) && has_more_input());
+
     return TRUE;
 }
 
@@ -327,275 +642,6 @@ static int word_ze(void)
     return TRUE;
 }
 
-static Word word_add_ = { TEXT_LITERAL("+"), 0, WORD_BUILTIN, NULL, word_add };
-static Word word_sub_ = { TEXT_LITERAL("-"), 0, WORD_BUILTIN, NULL,  word_sub };
-static Word word_mul_ = { TEXT_LITERAL("*"),  0, WORD_BUILTIN, NULL, word_mul };
-static Word word_div_ = { TEXT_LITERAL("/"),  0, WORD_BUILTIN, NULL, word_div };
-static Word word_dot_ = { TEXT_LITERAL("."),  0, WORD_BUILTIN, NULL, word_dot };
-static Word word_dup_ = { TEXT_LITERAL("dup"), 0, WORD_BUILTIN, NULL, word_dup };
-static Word word_drop_= { TEXT_LITERAL("drop"), 0, WORD_BUILTIN, NULL, word_drop };
-static Word word_ze_  = { TEXT_LITERAL("0="),  0, WORD_BUILTIN, NULL, word_ze };
-static Word word_dep_ = { TEXT_LITERAL("depth"),  0, WORD_BUILTIN, NULL, word_dep };
-static Word word_cr_  = { TEXT_LITERAL("cr"),  0, WORD_BUILTIN, NULL, word_cr };
-static Word word_emit_= { TEXT_LITERAL("emit"),  0, WORD_BUILTIN, NULL, word_emit };
-static Word word_swap_= { TEXT_LITERAL("swap"),  0, WORD_BUILTIN, NULL, word_swap };
-static Word word_over_= { TEXT_LITERAL("over"),  0, WORD_BUILTIN, NULL, word_over };
-static Word word_rot_= { TEXT_LITERAL("rot"),  0, WORD_BUILTIN, NULL, word_rot };
-static Word word_dots_= { TEXT_LITERAL(".s"),  0, WORD_BUILTIN, NULL, word_dots };
-static Word word_eq_  = { TEXT_LITERAL("="),  0, WORD_BUILTIN, NULL, word_eq };
-static Word word_lt_  = { TEXT_LITERAL("<"),  0, WORD_BUILTIN, NULL, word_lt };
-static Word word_gt_  = { TEXT_LITERAL(">"),  0, WORD_BUILTIN, NULL, word_gt };
-
-static Word* allot_word(void)
-{
-    /* TODO: optimize with reusing existing words */
-    if (dictionary_word_count >= DICTIONARY_WORDS)
-    {
-        return NULL;
-    }
-
-    return &dictionary_words[dictionary_word_count++];
-}
-
-static int copy_name(Token* dest, const Token* src)
-{
-    if (dictionary_name_pos + src->length > DICTIONARY_NAME_BYTES)
-    {
-        return FALSE;
-    }
-
-    dest->start = &dictionary_names[dictionary_name_pos];
-    dest->length = src->length;
-
-    memcpy(&dictionary_names[dictionary_name_pos], src->start, src->length);
-    dictionary_name_pos += src->length;
-
-    return TRUE;
-}
-
-static void add_word(Word* word)
-{
-    word->previous = latest_word;
-    latest_word = word;
-}
-
-static int text_equal(const Text* t1, const Text* t2)
-{
-    return ((t1->length == t2->length) &&
-            (strncmp(t1->start, t2->start, t1->length) == 0));
-}
-
-static Word* find_word(const Token* token)
-{
-    Word* word;
-    for (word = latest_word; word != NULL; word = word->previous)
-    {
-        if (text_equal(&word->name, token))
-        {
-            return word;
-        }
-    }
-    return NULL;
-}
-
-static int parse_number(const Token* token, cell_t* value)
-{
-    idx_t i = 0;
-    int negative = FALSE;
-    ucell_t result = 0;
-
-    if (token->length == 0)
-    {
-        return FALSE;
-    }
-
-    if (token->start[i] == '-')
-    {
-        negative = TRUE;
-        ++i;
-    }
-    else if (token->start[i] == '+')
-    {
-        ++i;
-    }
-
-    if (i == token->length)
-    {
-        return FALSE;
-    }
-
-    while (i < token->length)
-    {
-        unsigned char c = (unsigned char)token->start[i];
-
-        if (!isdigit(c))
-        {
-            return FALSE;
-        }
-
-        result = (ucell_t)(result * 10u + (ucell_t)(c - '0'));
-        ++i;
-    }
-
-    if (negative)
-    {
-        *value = (cell_t)(0u - result);
-    }
-    else
-    {
-        *value = (cell_t)result;
-    }
-
-    return TRUE;
-}
-
-static void skip_ignored()
-{
-    for (;;)
-    {
-        // skip whitespace
-        while (isspace((unsigned char)input_buffer[tokeniser_pos]))
-        {
-            ++tokeniser_pos;
-        }
-
-        // skip comment
-        if (input_buffer[tokeniser_pos] == '\\')
-        {
-            do
-            {
-                tokeniser_pos++;
-            } while (input_buffer[tokeniser_pos] != '\n' &&
-                     input_buffer[tokeniser_pos] != '\0');
-            continue;
-        }
-        break;
-    }
-}
-
-static int compile_word(Word* word)
-{
-    if (current_definition == NULL)
-    {
-        error("no current definition");
-        return FALSE;
-    }
-
-    if (current_definition->impl.colon.length >= WORD_BODY_SIZE)
-    {
-        error("definition too long");
-        return FALSE;
-    }
-
-    current_definition->impl.colon.body[
-        current_definition->impl.colon.length++
-    ] = word;
-
-    return TRUE;
-}
-
-static int execute_colon_word(Word* word);
-
-static int execute_word(Word* word)
-{
-    if (word->kind == WORD_BUILTIN)
-    {
-        return word->impl.builtin();
-    }
-
-    if (word->kind == WORD_COLON)
-    {
-        return execute_colon_word(word);
-    }
-
-    error("invalid word kind");
-    return FALSE;
-}
-
-static int execute_colon_word(Word* word)
-{
-    idx_t i;
-
-    for (i = 0; i < word->impl.colon.length; ++i)
-    {
-        if (!execute_word(word->impl.colon.body[i]))
-        {
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
-static int process_token(const Token* token)
-{
-    Word* word;
-    cell_t value;
-
-    word = find_word(token);
-
-    if (state == STATE_INTERPRET)
-    {
-        if (word != NULL)
-        {
-            return execute_word(word);
-        }
-
-        if (parse_number(token, &value))
-        {
-            return push(value);
-        }
-
-        error("unknown word");
-        return FALSE;
-    }
-
-    /* STATE_COMPILE */
-
-    if (word != NULL)
-    {
-        if (word->flags & WORD_FLAG_IMMEDIATE)
-        {
-            return execute_word(word);
-        }
-
-        return compile_word(word);
-    }
-
-    if (parse_number(token, &value))
-    {
-        /*
-         * We cannot just push it now. We need literal support.
-         * More on this below.
-         */
-        error("number literals in definitions not implemented yet");
-        return FALSE;
-    }
-
-    error("unknown word while compiling");
-    return FALSE;
-}
-
-static int next_token(Token* out)
-{
-    skip_ignored();
-    if (!has_more_input())
-    {
-        return FALSE;
-    }
-
-    out->start = input_buffer + tokeniser_pos;
-    out->length = 0;
-
-    do
-    {
-        tokeniser_pos++;
-        out->length++;
-    } while (!isspace((unsigned char)input_buffer[tokeniser_pos]) && has_more_input());
-
-    return TRUE;
-}
-
 static int word_colon(void)
 {
     Token name;
@@ -622,6 +668,7 @@ static int word_colon(void)
 
     word->flags = 0;
     word->kind = WORD_COLON;
+    word->impl.colon.first = NULL;
     word->impl.colon.length = 0;
 
     add_word(word);
@@ -646,8 +693,27 @@ static int word_semicolon(void)
     return TRUE;
 }
 
-static Word word_colon_  = { TEXT_LITERAL(":"),  WORD_FLAG_IMMEDIATE, WORD_BUILTIN, NULL, word_colon };
-static Word word_semicolon__ = { TEXT_LITERAL(";"), WORD_FLAG_IMMEDIATE, WORD_BUILTIN, NULL, word_semicolon };
+
+static Word word_add_       = { TEXT_LITERAL("+"),     0, WORD_BUILTIN, NULL, word_add };
+static Word word_sub_       = { TEXT_LITERAL("-"),     0, WORD_BUILTIN, NULL,  word_sub };
+static Word word_mul_       = { TEXT_LITERAL("*"),     0, WORD_BUILTIN, NULL, word_mul };
+static Word word_div_       = { TEXT_LITERAL("/"),     0, WORD_BUILTIN, NULL, word_div };
+static Word word_dot_       = { TEXT_LITERAL("."),     0, WORD_BUILTIN, NULL, word_dot };
+static Word word_dup_       = { TEXT_LITERAL("dup"),   0, WORD_BUILTIN, NULL, word_dup };
+static Word word_drop_      = { TEXT_LITERAL("drop"),  0, WORD_BUILTIN, NULL, word_drop };
+static Word word_ze_        = { TEXT_LITERAL("0="),    0, WORD_BUILTIN, NULL, word_ze };
+static Word word_dep_       = { TEXT_LITERAL("depth"), 0, WORD_BUILTIN, NULL, word_dep };
+static Word word_cr_        = { TEXT_LITERAL("cr"),    0, WORD_BUILTIN, NULL, word_cr };
+static Word word_emit_      = { TEXT_LITERAL("emit"),  0, WORD_BUILTIN, NULL, word_emit };
+static Word word_swap_      = { TEXT_LITERAL("swap"),  0, WORD_BUILTIN, NULL, word_swap };
+static Word word_over_      = { TEXT_LITERAL("over"),  0, WORD_BUILTIN, NULL, word_over };
+static Word word_rot_       = { TEXT_LITERAL("rot"),   0, WORD_BUILTIN, NULL, word_rot };
+static Word word_dots_      = { TEXT_LITERAL(".s"),    0, WORD_BUILTIN, NULL, word_dots };
+static Word word_eq_        = { TEXT_LITERAL("="),     0, WORD_BUILTIN, NULL, word_eq };
+static Word word_lt_        = { TEXT_LITERAL("<"),     0, WORD_BUILTIN, NULL, word_lt };
+static Word word_gt_        = { TEXT_LITERAL(">"),     0, WORD_BUILTIN, NULL, word_gt };
+static Word word_colon_     = { TEXT_LITERAL(":"),     0, WORD_BUILTIN, NULL, word_colon };
+static Word word_semicolon_ = { TEXT_LITERAL(";"), WORD_FLAG_IMMEDIATE, WORD_BUILTIN, NULL, word_semicolon };
 
 static void init_dictionary(void)
 {
@@ -670,7 +736,7 @@ static void init_dictionary(void)
     add_word(&word_lt_);
     add_word(&word_gt_);
     add_word(&word_colon_);
-    add_word(&word_semicolon__);
+    add_word(&word_semicolon_);
 }
 
 int main(void)
