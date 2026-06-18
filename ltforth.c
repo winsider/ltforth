@@ -9,12 +9,17 @@
 #define TRUE 1
 #define FALSE 0
 #define DATA_STACK_SIZE 64
-#define WORD_FLAG_IMMEDIATE 0x01
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
 #define DICTIONARY_WORDS 64
 #define DICTIONARY_NAME_BYTES 512
 #define INSTRUCTION_SPACE_SIZE 512
+
+#define WORD_FLAG_IMMEDIATE  0x01
+
+#define WORD_TYPE_MASK       0xf0
+#define WORD_TYPE_BUILTIN    0x10
+#define WORD_TYPE_COLON      0x20
 
 /* TYPES */
 typedef struct
@@ -28,19 +33,13 @@ typedef int (*word_fun_t)(void);
 
 typedef struct Word Word;
 
-typedef enum
-{
-    WORD_BUILTIN,
-    WORD_COLON
-} word_kind_t;
-
 typedef int (*word_func_t)(void);
 
 typedef int cell_t;
 typedef unsigned ucell_t;
 typedef unsigned char byte_t;
 typedef size_t idx_t;
-typedef unsigned char flags_t;
+typedef unsigned char word_flags_t;
 
 typedef enum
 {
@@ -62,8 +61,7 @@ typedef struct
 struct Word
 {
     Token name;
-    flags_t flags;
-    word_kind_t kind;
+    word_flags_t flags;
 
     union
     {
@@ -344,21 +342,31 @@ static int compile_literal(cell_t value)
     return TRUE;
 }
 
+static int word_is_builtin(const Word* word)
+{
+    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_BUILTIN;
+}
+
+static int word_is_colon(const Word* word)
+{
+    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_COLON;
+}
+
 static int execute_colon_word(Word* word);
 
 static int execute_word(Word* word)
 {
-    if (word->kind == WORD_BUILTIN)
+    if (word_is_builtin(word))
     {
         return word->impl.builtin();
     }
 
-    if (word->kind == WORD_COLON)
+    if (word_is_colon(word))
     {
         return execute_colon_word(word);
     }
 
-    error("invalid word kind");
+    error("invalid word type");
     return FALSE;
 }
 
@@ -660,8 +668,7 @@ static int word_colon(void)
         return FALSE;
     }
 
-    word->flags = 0;
-    word->kind = WORD_COLON;
+    word->flags = WORD_TYPE_COLON;
     word->impl.colon.first = NULL;
     word->impl.colon.length = 0;
 
@@ -687,7 +694,7 @@ static int word_semicolon(void)
 
 static int add_builtin(Token name,
                        word_func_t function,
-                       flags_t flags)
+                       word_flags_t flags)
 {
     Word* word;
 
@@ -700,55 +707,33 @@ static int add_builtin(Token name,
 
     word->name = name;
     word->flags = flags;
-    word->kind = WORD_BUILTIN;
     word->impl.builtin = function;
 
     return TRUE;
 }
 
-static Word word_add_       = { TEXT_LITERAL("+"),     0, WORD_BUILTIN, NULL, word_add };
-static Word word_sub_       = { TEXT_LITERAL("-"),     0, WORD_BUILTIN, NULL,  word_sub };
-static Word word_mul_       = { TEXT_LITERAL("*"),     0, WORD_BUILTIN, NULL, word_mul };
-static Word word_div_       = { TEXT_LITERAL("/"),     0, WORD_BUILTIN, NULL, word_div };
-static Word word_dot_       = { TEXT_LITERAL("."),     0, WORD_BUILTIN, NULL, word_dot };
-static Word word_dup_       = { TEXT_LITERAL("dup"),   0, WORD_BUILTIN, NULL, word_dup };
-static Word word_drop_      = { TEXT_LITERAL("drop"),  0, WORD_BUILTIN, NULL, word_drop };
-static Word word_ze_        = { TEXT_LITERAL("0="),    0, WORD_BUILTIN, NULL, word_ze };
-static Word word_dep_       = { TEXT_LITERAL("depth"), 0, WORD_BUILTIN, NULL, word_dep };
-static Word word_cr_        = { TEXT_LITERAL("cr"),    0, WORD_BUILTIN, NULL, word_cr };
-static Word word_emit_      = { TEXT_LITERAL("emit"),  0, WORD_BUILTIN, NULL, word_emit };
-static Word word_swap_      = { TEXT_LITERAL("swap"),  0, WORD_BUILTIN, NULL, word_swap };
-static Word word_over_      = { TEXT_LITERAL("over"),  0, WORD_BUILTIN, NULL, word_over };
-static Word word_rot_       = { TEXT_LITERAL("rot"),   0, WORD_BUILTIN, NULL, word_rot };
-static Word word_dots_      = { TEXT_LITERAL(".s"),    0, WORD_BUILTIN, NULL, word_dots };
-static Word word_eq_        = { TEXT_LITERAL("="),     0, WORD_BUILTIN, NULL, word_eq };
-static Word word_lt_        = { TEXT_LITERAL("<"),     0, WORD_BUILTIN, NULL, word_lt };
-static Word word_gt_        = { TEXT_LITERAL(">"),     0, WORD_BUILTIN, NULL, word_gt };
-static Word word_colon_     = { TEXT_LITERAL(":"),     0, WORD_BUILTIN, NULL, word_colon };
-static Word word_semicolon_ = { TEXT_LITERAL(";"), WORD_FLAG_IMMEDIATE, WORD_BUILTIN, NULL, word_semicolon };
-
 static void init_dictionary(void)
 {
-    add_builtin(TEXT_LITERAL("+"), word_add, 0);
-    add_builtin(TEXT_LITERAL("-"), word_sub, 0);
-    add_builtin(TEXT_LITERAL("*"), word_mul, 0);
-    add_builtin(TEXT_LITERAL("/"), word_div, 0);
-    add_builtin(TEXT_LITERAL("."), word_dot, 0);
-    add_builtin(TEXT_LITERAL("dup"), word_dup, 0);
-    add_builtin(TEXT_LITERAL("drop"), word_drop, 0);
-    add_builtin(TEXT_LITERAL("0="), word_ze, 0);
-    add_builtin(TEXT_LITERAL("depth"), word_dep, 0);
-    add_builtin(TEXT_LITERAL("cr"), word_cr, 0);;
-    add_builtin(TEXT_LITERAL("emit"), word_emit, 0);;
-    add_builtin(TEXT_LITERAL("swap"), word_swap, 0);
-    add_builtin(TEXT_LITERAL("over"), word_over, 0);
-    add_builtin(TEXT_LITERAL("rot"), word_rot, 0);;
-    add_builtin(TEXT_LITERAL(".s"), word_dots, 0);;
-    add_builtin(TEXT_LITERAL("="), word_eq, 0);
-    add_builtin(TEXT_LITERAL("<"), word_lt, 0);
-    add_builtin(TEXT_LITERAL(">"), word_gt, 0);
-    add_builtin(TEXT_LITERAL(":"), word_colon, 0);
-    add_builtin(TEXT_LITERAL(";"), word_semicolon, 9);
+    add_builtin(TEXT_LITERAL("+"), word_add, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("-"), word_sub, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("*"), word_mul, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("/"), word_div, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("."), word_dot, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("dup"), word_dup, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("drop"), word_drop, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("0="), word_ze, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("depth"), word_dep, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("cr"), word_cr, WORD_TYPE_BUILTIN);;
+    add_builtin(TEXT_LITERAL("emit"), word_emit, WORD_TYPE_BUILTIN);;
+    add_builtin(TEXT_LITERAL("swap"), word_swap, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("over"), word_over, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("rot"), word_rot, WORD_TYPE_BUILTIN);;
+    add_builtin(TEXT_LITERAL(".s"), word_dots, WORD_TYPE_BUILTIN);;
+    add_builtin(TEXT_LITERAL("="), word_eq, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("<"), word_lt, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL(">"), word_gt, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL(":"), word_colon, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL(";"), word_semicolon, WORD_TYPE_BUILTIN | WORD_FLAG_IMMEDIATE);
 }
 
 int main(void)
