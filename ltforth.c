@@ -64,7 +64,6 @@ struct Word
     Token name;
     flags_t flags;
     word_kind_t kind;
-    Word* previous;
 
     union
     {
@@ -94,8 +93,6 @@ static idx_t tokeniser_pos = 0;
 static cell_t data_stack[DATA_STACK_SIZE];
 static idx_t dsp = 0;
 
-static Word* latest_word = NULL;
-
 static Word dictionary_words[DICTIONARY_WORDS];
 static idx_t dictionary_word_count = 0;
 
@@ -107,7 +104,7 @@ static idx_t instruction_count = 0;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
-#define TEXT_LITERAL(s) { s, sizeof(s) - 1 }
+#define TEXT_LITERAL(s) ((Token){ (s), sizeof(s) - 1 })
 #define PUSH_UNCHECKED(v) (data_stack[dsp++] = (v))
 #define POP_UNCHECKED(v)  ((v) = data_stack[--dsp])
 #define REQUIRE_STACK(n)                     \
@@ -165,7 +162,6 @@ static Instruction* allot_instruction(void)
 
 static Word* allot_word(void)
 {
-    /* TODO: optimize with reusing existing words */
     if (dictionary_word_count >= DICTIONARY_WORDS)
     {
         return NULL;
@@ -190,12 +186,6 @@ static int copy_name(Token* dest, const Token* src)
     return TRUE;
 }
 
-static void add_word(Word* word)
-{
-    word->previous = latest_word;
-    latest_word = word;
-}
-
 static int text_equal(const Text* t1, const Text* t2)
 {
     return ((t1->length == t2->length) &&
@@ -204,14 +194,18 @@ static int text_equal(const Text* t1, const Text* t2)
 
 static Word* find_word(const Token* token)
 {
-    Word* word;
-    for (word = latest_word; word != NULL; word = word->previous)
+    idx_t i;
+
+    for (i = dictionary_word_count; i > 0; --i)
     {
+        Word* word = &dictionary_words[i - 1];
+
         if (text_equal(&word->name, token))
         {
             return word;
         }
     }
+
     return NULL;
 }
 
@@ -671,8 +665,6 @@ static int word_colon(void)
     word->impl.colon.first = NULL;
     word->impl.colon.length = 0;
 
-    add_word(word);
-
     current_definition = word;
     state = STATE_COMPILE;
 
@@ -693,6 +685,26 @@ static int word_semicolon(void)
     return TRUE;
 }
 
+static int add_builtin(Token name,
+                       word_func_t function,
+                       flags_t flags)
+{
+    Word* word;
+
+    word = allot_word();
+    if (word == NULL)
+    {
+        error("dictionary full");
+        return FALSE;
+    }
+
+    word->name = name;
+    word->flags = flags;
+    word->kind = WORD_BUILTIN;
+    word->impl.builtin = function;
+
+    return TRUE;
+}
 
 static Word word_add_       = { TEXT_LITERAL("+"),     0, WORD_BUILTIN, NULL, word_add };
 static Word word_sub_       = { TEXT_LITERAL("-"),     0, WORD_BUILTIN, NULL,  word_sub };
@@ -717,26 +729,26 @@ static Word word_semicolon_ = { TEXT_LITERAL(";"), WORD_FLAG_IMMEDIATE, WORD_BUI
 
 static void init_dictionary(void)
 {
-    add_word(&word_add_);
-    add_word(&word_sub_);
-    add_word(&word_mul_);
-    add_word(&word_div_);
-    add_word(&word_dot_);
-    add_word(&word_dup_);
-    add_word(&word_drop_);
-    add_word(&word_ze_);
-    add_word(&word_dep_);
-    add_word(&word_cr_);
-    add_word(&word_emit_);
-    add_word(&word_swap_);
-    add_word(&word_over_);
-    add_word(&word_rot_);
-    add_word(&word_dots_);
-    add_word(&word_eq_);
-    add_word(&word_lt_);
-    add_word(&word_gt_);
-    add_word(&word_colon_);
-    add_word(&word_semicolon_);
+    add_builtin(TEXT_LITERAL("+"), word_add, 0);
+    add_builtin(TEXT_LITERAL("-"), word_sub, 0);
+    add_builtin(TEXT_LITERAL("*"), word_mul, 0);
+    add_builtin(TEXT_LITERAL("/"), word_div, 0);
+    add_builtin(TEXT_LITERAL("."), word_dot, 0);
+    add_builtin(TEXT_LITERAL("dup"), word_dup, 0);
+    add_builtin(TEXT_LITERAL("drop"), word_drop, 0);
+    add_builtin(TEXT_LITERAL("0="), word_ze, 0);
+    add_builtin(TEXT_LITERAL("depth"), word_dep, 0);
+    add_builtin(TEXT_LITERAL("cr"), word_cr, 0);;
+    add_builtin(TEXT_LITERAL("emit"), word_emit, 0);;
+    add_builtin(TEXT_LITERAL("swap"), word_swap, 0);
+    add_builtin(TEXT_LITERAL("over"), word_over, 0);
+    add_builtin(TEXT_LITERAL("rot"), word_rot, 0);;
+    add_builtin(TEXT_LITERAL(".s"), word_dots, 0);;
+    add_builtin(TEXT_LITERAL("="), word_eq, 0);
+    add_builtin(TEXT_LITERAL("<"), word_lt, 0);
+    add_builtin(TEXT_LITERAL(">"), word_gt, 0);
+    add_builtin(TEXT_LITERAL(":"), word_colon, 0);
+    add_builtin(TEXT_LITERAL(";"), word_semicolon, 9);
 }
 
 int main(void)
