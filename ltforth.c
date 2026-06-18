@@ -81,8 +81,12 @@ typedef enum
     STATE_COMPILE
 } forth_state_t;
 
-static forth_state_t state = STATE_INTERPRET;
-static Word* current_definition = NULL;
+typedef struct
+{
+    idx_t word_count;
+    idx_t name_pos;
+    idx_t instruction_count;
+} dictionary_mark_t;
 
 /* GLOBALS */
 static char input_buffer[LINE_SIZE];
@@ -99,6 +103,11 @@ static idx_t dictionary_name_pos = 0;
 
 static Instruction instruction_space[INSTRUCTION_SPACE_SIZE];
 static idx_t instruction_count = 0;
+
+static dictionary_mark_t definition_mark;
+
+static forth_state_t state = STATE_INTERPRET;
+static Word* current_definition = NULL;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
@@ -124,10 +133,31 @@ static idx_t instruction_count = 0;
     } while (0)
 
 /* FUNCTIONS */
+
 static void error(const char* msg)
 {
     fprintf(stderr, "ERROR: %s\n", msg);
     fflush(stderr);
+}
+
+static void restore_dictionary_mark(const dictionary_mark_t* mark)
+{
+    dictionary_word_count = mark->word_count;
+    dictionary_name_pos = mark->name_pos;
+    instruction_count = mark->instruction_count;
+}
+
+static void abort_definition(void)
+{
+    if (state != STATE_COMPILE)
+    {
+        return;
+    }
+
+    restore_dictionary_mark(&definition_mark);
+
+    current_definition = NULL;
+    state = STATE_INTERPRET;
 }
 
 static int push(cell_t value)
@@ -649,13 +679,24 @@ static int word_colon(void)
     Token name;
     Word* word;
 
+    if (state != STATE_INTERPRET)
+    {
+        error("nested definition");
+        return FALSE;
+    }
+
     if (!next_token(&name))
     {
         error("expected name after ':'");
         return FALSE;
     }
 
+    definition_mark.word_count = dictionary_word_count;
+    definition_mark.name_pos = dictionary_name_pos;
+    definition_mark.instruction_count = instruction_count;
+
     word = allot_word();
+
     if (word == NULL)
     {
         error("dictionary full");
@@ -757,6 +798,10 @@ int main(void)
         {
             if (!process_token(&token))
             {
+                if (state == STATE_COMPILE)
+                {
+                    abort_definition();
+                }
                 break;
             }
         }
