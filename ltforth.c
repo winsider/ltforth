@@ -14,6 +14,7 @@
 #define DICTIONARY_WORDS 64
 #define DICTIONARY_NAME_BYTES 512
 #define INSTRUCTION_SPACE_SIZE 512
+#define WORDS_PER_LINE 4
 
 #define WORD_FLAG_IMMEDIATE  0x01
 
@@ -218,6 +219,11 @@ static int text_equal(const Text* t1, const Text* t2)
 {
     return ((t1->length == t2->length) &&
             (strncmp(t1->start, t2->start, t1->length) == 0));
+}
+
+static void print_text(const Text* text)
+{
+    printf("%.*s", (int)text->length, text->start);
 }
 
 static Word* find_word(const Token* token)
@@ -733,6 +739,96 @@ static int word_semicolon(void)
     return TRUE;
 }
 
+static int word_words(void)
+{
+    idx_t i;
+
+    for (i = 0; i < dictionary_word_count; ++i)
+    {
+        Word* word = &dictionary_words[i];
+
+        print_text(&word->name);
+        putchar(' ');
+
+        if ((i % WORDS_PER_LINE) == (WORDS_PER_LINE - 1))
+        {
+            putchar('\n');
+        }
+    }
+
+    if ((dictionary_word_count % WORDS_PER_LINE) != 0)
+    {
+        putchar('\n');
+    }
+
+    return TRUE;
+}
+
+static int word_see(void)
+{
+    Token name;
+    Word* word;
+    idx_t i;
+
+    if (!next_token(&name))
+    {
+        error("expected word name after 'see'");
+        return FALSE;
+    }
+
+    word = find_word(&name);
+    if (word == NULL)
+    {
+        error("unknown word");
+        return FALSE;
+    }
+
+    if ((word->flags & WORD_TYPE_MASK) == WORD_TYPE_BUILTIN)
+    {
+        print_text(&word->name);
+        printf(" is builtin\n");
+        return TRUE;
+    }
+
+    if ((word->flags & WORD_TYPE_MASK) != WORD_TYPE_COLON)
+    {
+        error("invalid word type");
+        return FALSE;
+    }
+
+    printf(": ");
+    print_text(&word->name);
+    putchar('\n');
+
+    for (i = 0; i < word->impl.colon.length; ++i)
+    {
+        Instruction* instruction = &word->impl.colon.first[i];
+
+        printf("  ");
+
+        switch (instruction->op)
+        {
+            case OP_CALL:
+                print_text(&instruction->arg.word->name);
+                break;
+
+            case OP_LIT:
+                printf("%d", instruction->arg.literal);
+                break;
+
+            default:
+                printf("<invalid instruction>");
+                break;
+        }
+
+        putchar('\n');
+    }
+
+    printf(";\n");
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -775,6 +871,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL(">"), word_gt, WORD_TYPE_BUILTIN);
     add_builtin(TEXT_LITERAL(":"), word_colon, WORD_TYPE_BUILTIN);
     add_builtin(TEXT_LITERAL(";"), word_semicolon, WORD_TYPE_BUILTIN | WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("words"), word_words, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("see"), word_see, WORD_TYPE_BUILTIN);
 }
 
 int main(void)
