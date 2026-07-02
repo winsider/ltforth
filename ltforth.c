@@ -4,11 +4,12 @@
 #include <arm/limits.h>
 
 /* CONSTANTS */
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 #define LINE_SIZE 128
 #define TRUE 1
 #define FALSE 0
 #define DATA_STACK_SIZE 64
+#define CONTROL_STACK_SIZE 16
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
 #define DICTIONARY_WORDS 64
@@ -45,8 +46,16 @@ typedef unsigned char word_flags_t;
 typedef enum
 {
     OP_CALL,
-    OP_LIT
+    OP_LIT,
+    OP_BRANCH,
+    OP_BRANCH_IF_ZERO
 } opcode_t;
+
+typedef enum
+{
+    CONTROL_IF,
+    CONTROL_ELSE
+} control_type_t;
 
 typedef struct
 {
@@ -56,8 +65,15 @@ typedef struct
     {
         Word* word;
         cell_t literal;
+        idx_t branch_target;
     } arg;
 } Instruction;
+
+typedef struct
+{
+    control_type_t type;
+    Instruction* branch_instruction;
+} ControlEntry;
 
 struct Word
 {
@@ -95,6 +111,9 @@ static idx_t tokeniser_pos = 0;
 
 static cell_t data_stack[DATA_STACK_SIZE];
 static idx_t dsp = 0;
+
+static ControlEntry control_stack[CONTROL_STACK_SIZE];
+static idx_t csp = 0;
 
 static Word dictionary_words[DICTIONARY_WORDS];
 static idx_t dictionary_word_count = 0;
@@ -197,6 +216,32 @@ static Word* allot_word(void)
     }
 
     return &dictionary_words[dictionary_word_count++];
+}
+
+static int push_control(control_type_t type,
+                        Instruction* branch_instruction)
+{
+    if (csp >= CONTROL_STACK_SIZE)
+    {
+        error("control stack overflow");
+        return FALSE;
+    }
+
+    control_stack[csp].type = type;
+    control_stack[csp].branch_instruction = branch_instruction;
+    ++csp;
+
+    return TRUE;
+}
+
+static ControlEntry* top_control(void)
+{
+    if (csp == 0)
+    {
+        return NULL;
+    }
+
+    return &control_stack[csp - 1];
 }
 
 static int copy_name(Token* dest, const Token* src)
@@ -318,21 +363,21 @@ static void skip_ignored()
     }
 }
 
-static int compile_word(Word* word)
+static Instruction* compile_instruction(opcode_t op)
 {
     Instruction* instruction;
 
     if (current_definition == NULL)
     {
         error("no current definition");
-        return FALSE;
+        return NULL;
     }
 
     instruction = allot_instruction();
     if (instruction == NULL)
     {
         error("instruction space full");
-        return FALSE;
+        return NULL;
     }
 
     if (current_definition->impl.colon.length == 0)
@@ -340,11 +385,23 @@ static int compile_word(Word* word)
         current_definition->impl.colon.first = instruction;
     }
 
-    instruction->op = OP_CALL;
-    instruction->arg.word = word;
-
+    instruction->op = op;
     ++current_definition->impl.colon.length;
 
+    return instruction;
+}
+
+static int compile_word(Word* word)
+{
+    Instruction* instruction;
+
+    instruction = compile_instruction(OP_CALL);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    instruction->arg.word = word;
     return TRUE;
 }
 
@@ -352,30 +409,28 @@ static int compile_literal(cell_t value)
 {
     Instruction* instruction;
 
-    if (current_definition == NULL)
-    {
-        error("no current definition");
-        return FALSE;
-    }
-
-    instruction = allot_instruction();
+    instruction = compile_instruction(OP_LIT);
     if (instruction == NULL)
     {
-        error("instruction space full");
         return FALSE;
     }
 
-    if (current_definition->impl.colon.length == 0)
+    instruction->arg.literal = value;
+    return TRUE;
+}
+
+static Instruction* compile_branch(opcode_t op)
+{
+    Instruction* instruction;
+
+    instruction = compile_instruction(op);
+    if (instruction == NULL)
     {
-        current_definition->impl.colon.first = instruction;
+        return NULL;
     }
 
-    instruction->op = OP_LIT;
-    instruction->arg.literal = value;
-
-    ++current_definition->impl.colon.length;
-
-    return TRUE;
+    instruction->arg.branch_target = 0;
+    return instruction;
 }
 
 static int word_is_builtin(const Word* word)
@@ -408,12 +463,15 @@ static int execute_word(Word* word)
 
 static int execute_colon_word(Word* word)
 {
-    idx_t i;
+    idx_t ip;
     Instruction* instruction;
+    cell_t flag;
 
-    for (i = 0; i < word->impl.colon.length; ++i)
+    ip = 0;
+
+    while (ip < word->impl.colon.length)
     {
-        instruction = &word->impl.colon.first[i];
+        instruction = &word->impl.colon.first[ip++];
 
         switch (instruction->op)
         {
@@ -428,6 +486,35 @@ static int execute_colon_word(Word* word)
                 if (!push(instruction->arg.literal))
                 {
                     return FALSE;
+                }
+                break;
+
+            case OP_BRANCH:
+                if (instruction->arg.branch_target >
+                    word->impl.colon.length)
+                {
+                    error("invalid branch target");
+                    return FALSE;
+                }
+
+                ip = instruction->arg.branch_target;
+                break;
+
+            case OP_BRANCH_IF_ZERO:
+                REQUIRE_STACK(1);
+
+                flag = data_stack[--dsp];
+
+                if (flag == 0)
+                {
+                    if (instruction->arg.branch_target >
+                        word->impl.colon.length)
+                    {
+                        error("invalid branch target");
+                        return FALSE;
+                    }
+
+                    ip = instruction->arg.branch_target;
                 }
                 break;
 
@@ -733,6 +820,12 @@ static int word_semicolon(void)
         return FALSE;
     }
 
+    if (csp != 0)
+    {
+        error("unclosed control structure");
+        return FALSE;
+    }
+
     state = STATE_INTERPRET;
     current_definition = NULL;
 
@@ -783,14 +876,14 @@ static int word_see(void)
         return FALSE;
     }
 
-    if ((word->flags & WORD_TYPE_MASK) == WORD_TYPE_BUILTIN)
+    if (word_is_builtin(word))
     {
         print_text(&word->name);
         printf(" is builtin\n");
         return TRUE;
     }
 
-    if ((word->flags & WORD_TYPE_MASK) != WORD_TYPE_COLON)
+    if (!word_is_colon(word))
     {
         error("invalid word type");
         return FALSE;
@@ -816,6 +909,16 @@ static int word_see(void)
                 printf("%d", instruction->arg.literal);
                 break;
 
+            case OP_BRANCH:
+                printf("branch %u",
+                       (unsigned)instruction->arg.branch_target);
+                break;
+
+            case OP_BRANCH_IF_ZERO:
+                printf("0branch %u",
+                       (unsigned)instruction->arg.branch_target);
+                break;
+
             default:
                 printf("<invalid instruction>");
                 break;
@@ -825,6 +928,88 @@ static int word_see(void)
     }
 
     printf(";\n");
+    return TRUE;
+}
+
+static int word_if(void)
+{
+    Instruction* branch;
+
+    if (state != STATE_COMPILE)
+    {
+        error("IF is compile-only");
+        return FALSE;
+    }
+
+    branch = compile_branch(OP_BRANCH_IF_ZERO);
+    if (branch == NULL)
+    {
+        return FALSE;
+    }
+
+    return push_control(CONTROL_IF, branch);
+}
+
+static int word_else(void)
+{
+    ControlEntry* control;
+    Instruction* branch;
+
+    if (state != STATE_COMPILE)
+    {
+        error("ELSE is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_IF)
+    {
+        error("ELSE without IF");
+        return FALSE;
+    }
+
+    branch = compile_branch(OP_BRANCH);
+    if (branch == NULL)
+    {
+        return FALSE;
+    }
+
+    /*
+     * compile_branch() has now added the unconditional branch.
+     * The next instruction is the first instruction in the ELSE part.
+     */
+    control->branch_instruction->arg.branch_target =
+        current_definition->impl.colon.length;
+
+    control->type = CONTROL_ELSE;
+    control->branch_instruction = branch;
+
+    return TRUE;
+}
+
+static int word_then(void)
+{
+    ControlEntry* control;
+
+    if (state != STATE_COMPILE)
+    {
+        error("THEN is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL)
+    {
+        error("THEN without IF");
+        return FALSE;
+    }
+
+    control->branch_instruction->arg.branch_target =
+        current_definition->impl.colon.length;
+
+    --csp;
 
     return TRUE;
 }
@@ -843,7 +1028,7 @@ static int add_builtin(Token name,
     }
 
     word->name = name;
-    word->flags = flags;
+    word->flags = WORD_TYPE_BUILTIN | flags;
     word->impl.builtin = function;
 
     return TRUE;
@@ -851,28 +1036,31 @@ static int add_builtin(Token name,
 
 static void init_dictionary(void)
 {
-    add_builtin(TEXT_LITERAL("+"), word_add, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("-"), word_sub, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("*"), word_mul, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("/"), word_div, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("."), word_dot, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("dup"), word_dup, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("drop"), word_drop, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("0="), word_ze, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("depth"), word_dep, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("cr"), word_cr, WORD_TYPE_BUILTIN);;
-    add_builtin(TEXT_LITERAL("emit"), word_emit, WORD_TYPE_BUILTIN);;
-    add_builtin(TEXT_LITERAL("swap"), word_swap, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("over"), word_over, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("rot"), word_rot, WORD_TYPE_BUILTIN);;
-    add_builtin(TEXT_LITERAL(".s"), word_dots, WORD_TYPE_BUILTIN);;
-    add_builtin(TEXT_LITERAL("="), word_eq, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("<"), word_lt, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL(">"), word_gt, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL(":"), word_colon, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL(";"), word_semicolon, WORD_TYPE_BUILTIN | WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("words"), word_words, WORD_TYPE_BUILTIN);
-    add_builtin(TEXT_LITERAL("see"), word_see, WORD_TYPE_BUILTIN);
+    add_builtin(TEXT_LITERAL("+"), word_add, 0);
+    add_builtin(TEXT_LITERAL("-"), word_sub, 0);
+    add_builtin(TEXT_LITERAL("*"), word_mul, 0);
+    add_builtin(TEXT_LITERAL("/"), word_div, 0);
+    add_builtin(TEXT_LITERAL("."), word_dot, 0);
+    add_builtin(TEXT_LITERAL("dup"), word_dup, 0);
+    add_builtin(TEXT_LITERAL("drop"), word_drop, 0);
+    add_builtin(TEXT_LITERAL("0="), word_ze, 0);
+    add_builtin(TEXT_LITERAL("depth"), word_dep, 0);
+    add_builtin(TEXT_LITERAL("cr"), word_cr, 0);;
+    add_builtin(TEXT_LITERAL("emit"), word_emit, 0);;
+    add_builtin(TEXT_LITERAL("swap"), word_swap, 0);
+    add_builtin(TEXT_LITERAL("over"), word_over, 0);
+    add_builtin(TEXT_LITERAL("rot"), word_rot, 0);;
+    add_builtin(TEXT_LITERAL(".s"), word_dots, 0);;
+    add_builtin(TEXT_LITERAL("="), word_eq, 0);
+    add_builtin(TEXT_LITERAL("<"), word_lt, 0);
+    add_builtin(TEXT_LITERAL(">"), word_gt, 0);
+    add_builtin(TEXT_LITERAL(":"), word_colon, 0);
+    add_builtin(TEXT_LITERAL(";"), word_semicolon, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("words"), word_words, 0);
+    add_builtin(TEXT_LITERAL("see"), word_see, 0);
+    add_builtin(TEXT_LITERAL("if"), word_if, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("else"), word_else, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("then"), word_then, WORD_FLAG_IMMEDIATE);
 }
 
 int main(void)
