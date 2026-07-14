@@ -55,7 +55,8 @@ typedef enum
 {
     CONTROL_IF,
     CONTROL_ELSE,
-    CONTROL_BEGIN
+    CONTROL_BEGIN,
+    CONTROL_WHILE
 } control_type_t;
 
 typedef struct
@@ -73,12 +74,8 @@ typedef struct
 typedef struct
 {
     control_type_t type;
-
-    union
-    {
-        Instruction* branch_instruction;
-        idx_t target;
-    } data;
+    idx_t target;
+    Instruction* branch_instruction;
 } ControlEntry;
 
 struct Word
@@ -244,7 +241,8 @@ static int push_control(control_type_t type,
     }
 
     control_stack[csp].type = type;
-    control_stack[csp].data.branch_instruction = branch_instruction;
+    control_stack[csp].branch_instruction = branch_instruction;
+    control_stack[csp].target = 0;
     ++csp;
 
     return TRUE;
@@ -998,11 +996,11 @@ static int word_else(void)
      * compile_branch() has now added the unconditional branch.
      * The next instruction is the first instruction in the ELSE part.
      */
-    control->data.branch_instruction->arg.branch_target =
+    control->branch_instruction->arg.branch_target =
         current_definition->impl.colon.length;
 
     control->type = CONTROL_ELSE;
-    control->data.branch_instruction = branch;
+    control->branch_instruction = branch;
 
     return TRUE;
 }
@@ -1019,13 +1017,14 @@ static int word_then(void)
 
     control = top_control();
 
-    if (control == NULL)
+    if (control == NULL ||
+       (control->type != CONTROL_IF && control->type != CONTROL_ELSE))
     {
         error("THEN without IF");
         return FALSE;
     }
 
-    control->data.branch_instruction->arg.branch_target =
+    control->branch_instruction->arg.branch_target =
         current_definition->impl.colon.length;
 
     --csp;
@@ -1048,7 +1047,8 @@ static int word_begin(void)
     }
 
     control_stack[csp].type = CONTROL_BEGIN;
-    control_stack[csp].data.target = current_instruction_index();
+    control_stack[csp].target = current_instruction_index();
+    control_stack[csp].branch_instruction = NULL;
     ++csp;
 
     return TRUE;
@@ -1079,7 +1079,78 @@ static int word_until(void)
         return FALSE;
     }
 
-    branch->arg.branch_target = control->data.target;
+    branch->arg.branch_target = control->target;
+
+    --csp;
+
+    return TRUE;
+}
+
+static int word_while(void)
+{
+    ControlEntry* control;
+    Instruction* branch;
+    idx_t begin_target;
+
+    if (state != STATE_COMPILE)
+    {
+        error("WHILE is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_BEGIN)
+    {
+        error("WHILE without BEGIN");
+        return FALSE;
+    }
+
+    begin_target = control->target;
+
+    branch = compile_branch(OP_BRANCH_IF_ZERO);
+    if (branch == NULL)
+    {
+        return FALSE;
+    }
+
+    control->type = CONTROL_WHILE;
+    control->target = begin_target;
+    control->branch_instruction = branch;
+
+    return TRUE;
+}
+
+static int word_repeat(void)
+{
+    ControlEntry* control;
+    Instruction* branch;
+
+    if (state != STATE_COMPILE)
+    {
+        error("REPEAT is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_WHILE)
+    {
+        error("REPEAT without WHILE");
+        return FALSE;
+    }
+
+    branch = compile_branch(OP_BRANCH);
+    if (branch == NULL)
+    {
+        return FALSE;
+    }
+
+    branch->arg.branch_target =
+        control->target;
+
+    control->branch_instruction->arg.branch_target =
+        current_definition->impl.colon.length;
 
     --csp;
 
@@ -1135,6 +1206,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("then"), word_then, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("begin"), word_begin, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("until"), word_until, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("while"), word_while, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("repeat"), word_repeat, WORD_FLAG_IMMEDIATE);
 }
 
 int main(void)
