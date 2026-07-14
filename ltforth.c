@@ -54,7 +54,8 @@ typedef enum
 typedef enum
 {
     CONTROL_IF,
-    CONTROL_ELSE
+    CONTROL_ELSE,
+    CONTROL_BEGIN
 } control_type_t;
 
 typedef struct
@@ -72,7 +73,12 @@ typedef struct
 typedef struct
 {
     control_type_t type;
-    Instruction* branch_instruction;
+
+    union
+    {
+        Instruction* branch_instruction;
+        idx_t target;
+    } data;
 } ControlEntry;
 
 struct Word
@@ -160,6 +166,16 @@ static void error(const char* msg)
     fflush(stderr);
 }
 
+static idx_t current_instruction_index(void)
+{
+    if (current_definition == NULL)
+    {
+        return 0;
+    }
+
+    return current_definition->impl.colon.length;
+}
+
 static void restore_dictionary_mark(const dictionary_mark_t* mark)
 {
     dictionary_word_count = mark->word_count;
@@ -228,7 +244,7 @@ static int push_control(control_type_t type,
     }
 
     control_stack[csp].type = type;
-    control_stack[csp].branch_instruction = branch_instruction;
+    control_stack[csp].data.branch_instruction = branch_instruction;
     ++csp;
 
     return TRUE;
@@ -895,9 +911,11 @@ static int word_see(void)
 
     for (i = 0; i < word->impl.colon.length; ++i)
     {
-        Instruction* instruction = &word->impl.colon.first[i];
+        Instruction* instruction;
 
-        printf("  ");
+        instruction = &word->impl.colon.first[i];
+
+        printf("  %u: ", (unsigned)i);
 
         switch (instruction->op)
         {
@@ -928,6 +946,7 @@ static int word_see(void)
     }
 
     printf(";\n");
+
     return TRUE;
 }
 
@@ -979,11 +998,11 @@ static int word_else(void)
      * compile_branch() has now added the unconditional branch.
      * The next instruction is the first instruction in the ELSE part.
      */
-    control->branch_instruction->arg.branch_target =
+    control->data.branch_instruction->arg.branch_target =
         current_definition->impl.colon.length;
 
     control->type = CONTROL_ELSE;
-    control->branch_instruction = branch;
+    control->data.branch_instruction = branch;
 
     return TRUE;
 }
@@ -1006,8 +1025,61 @@ static int word_then(void)
         return FALSE;
     }
 
-    control->branch_instruction->arg.branch_target =
+    control->data.branch_instruction->arg.branch_target =
         current_definition->impl.colon.length;
+
+    --csp;
+
+    return TRUE;
+}
+
+static int word_begin(void)
+{
+    if (state != STATE_COMPILE)
+    {
+        error("BEGIN is compile-only");
+        return FALSE;
+    }
+
+    if (csp >= CONTROL_STACK_SIZE)
+    {
+        error("control stack overflow");
+        return FALSE;
+    }
+
+    control_stack[csp].type = CONTROL_BEGIN;
+    control_stack[csp].data.target = current_instruction_index();
+    ++csp;
+
+    return TRUE;
+}
+
+static int word_until(void)
+{
+    ControlEntry* control;
+    Instruction* branch;
+
+    if (state != STATE_COMPILE)
+    {
+        error("UNTIL is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_BEGIN)
+    {
+        error("UNTIL without BEGIN");
+        return FALSE;
+    }
+
+    branch = compile_branch(OP_BRANCH_IF_ZERO);
+    if (branch == NULL)
+    {
+        return FALSE;
+    }
+
+    branch->arg.branch_target = control->data.target;
 
     --csp;
 
@@ -1061,6 +1133,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("if"), word_if, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("else"), word_else, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("then"), word_then, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("begin"), word_begin, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("until"), word_until, WORD_FLAG_IMMEDIATE);
 }
 
 int main(void)
