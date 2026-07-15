@@ -24,6 +24,13 @@
 #define WORD_TYPE_BUILTIN    0x10
 #define WORD_TYPE_COLON      0x20
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#define STDIN_IS_INTERACTIVE() isatty(0)
+#else
+#define STDIN_IS_INTERACTIVE() TRUE
+#endif
+
 /* TYPES */
 typedef struct
 {
@@ -1456,35 +1463,65 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
 }
 
+static int process_input_buffer(void)
+{
+    Token token;
+
+    tokeniser_pos = 0;
+
+    while (next_token(&token))
+    {
+        if (!process_token(&token))
+        {
+            if (state == STATE_COMPILE)
+            {
+                abort_definition();
+            }
+
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 int main(void)
 {
-    printf("ltforth %s\n", VERSION);
+    int interactive;
+
+    interactive = STDIN_IS_INTERACTIVE();
+
+    if (interactive)
+    {
+        printf("ltforth %s\n", VERSION);
+    }
 
     init_dictionary();
 
     for (;;)
     {
-        printf("> ");
-        fflush(stdout);
+        if (interactive)
+        {
+            printf(state == STATE_COMPILE ? "... " : "> ");
+            fflush(stdout);
+        }
+
         if (fgets(input_buffer, LINE_SIZE, stdin) == NULL)
         {
-            /* end of file or input */
+            if (state == STATE_COMPILE)
+            {
+                error("unfinished definition");
+                abort_definition();
+            }
+
             break;
         }
-        tokeniser_pos = 0;
-        Token token;
-        while (next_token(&token))
+
+        if (process_input_buffer() && interactive)
         {
-            if (!process_token(&token))
-            {
-                if (state == STATE_COMPILE)
-                {
-                    abort_definition();
-                }
-                break;
-            }
+            printf("OK\n");
         }
-        printf("OK\n");
     }
+
     return 0;
 }
