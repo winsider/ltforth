@@ -59,7 +59,8 @@ typedef enum
     OP_BRANCH_IF_ZERO,
     OP_DO,
     OP_LOOP,
-    OP_I
+    OP_I,
+    OP_J
 } opcode_t;
 
 typedef enum
@@ -646,6 +647,22 @@ static int execute_colon_word(Word* word)
                 break;
             }
 
+            case OP_J:
+            {
+                if (rsp < 4)
+                {
+                    error("return stack underflow");
+                    return FALSE;
+                }
+
+                if (!push(return_stack[rsp - 3]))
+                {
+                    return FALSE;
+                }
+
+                break;
+            }
+
             default:
                 error("invalid instruction");
                 return FALSE;
@@ -1049,6 +1066,24 @@ static int word_see(void)
                        (unsigned)instruction->arg.branch_target);
                 break;
 
+            case OP_DO:
+                printf("do %u",
+                       (unsigned)instruction->arg.branch_target);
+                break;
+
+            case OP_LOOP:
+                printf("loop %u",
+                       (unsigned)instruction->arg.branch_target);
+                break;
+
+            case OP_I:
+                printf("i");
+                break;
+
+            case OP_J:
+                printf("j");
+                break;
+
             default:
                 printf("<invalid instruction>");
                 break;
@@ -1423,6 +1458,20 @@ static int word_i(void)
     return instruction != NULL;
 }
 
+static int word_j(void)
+{
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("J is compile-only");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_J);
+    return instruction != NULL;
+}
+
 static void init_dictionary(void)
 {
     add_builtin(TEXT_LITERAL("+"), word_add, 0);
@@ -1461,6 +1510,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("do"), word_do, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("loop"), word_loop, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("j"), word_j, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
