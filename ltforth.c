@@ -10,6 +10,7 @@
 #define FALSE 0
 #define DATA_STACK_SIZE 64
 #define CONTROL_STACK_SIZE 16
+#define RETURN_STACK_SIZE 32
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
 #define DICTIONARY_WORDS 64
@@ -118,6 +119,9 @@ static idx_t dsp = 0;
 static ControlEntry control_stack[CONTROL_STACK_SIZE];
 static idx_t csp = 0;
 
+static cell_t return_stack[RETURN_STACK_SIZE];
+static idx_t rsp = 0;
+
 static Word dictionary_words[DICTIONARY_WORDS];
 static idx_t dictionary_word_count = 0;
 
@@ -154,6 +158,9 @@ static Word* current_definition = NULL;
             return FALSE;                                      \
         }                                                      \
     } while (0)
+
+#define RPUSH_UNCHECKED(v) (return_stack[rsp++] = (v))
+#define RPOP_UNCHECKED(v)  ((v) = return_stack[--rsp])
 
 /* FUNCTIONS */
 
@@ -208,6 +215,30 @@ static int pop(cell_t* value)
 {
     REQUIRE_STACK(1);
     POP_UNCHECKED(*value);
+    return TRUE;
+}
+
+static int rpush(cell_t value)
+{
+    if (rsp >= RETURN_STACK_SIZE)
+    {
+        error("return stack overflow");
+        return FALSE;
+    }
+
+    return_stack[rsp++] = value;
+    return TRUE;
+}
+
+static int rpop(cell_t* value)
+{
+    if (rsp == 0)
+    {
+        error("return stack underflow");
+        return FALSE;
+    }
+
+    *value = return_stack[--rsp];
     return TRUE;
 }
 
@@ -1177,6 +1208,73 @@ static int add_builtin(Token name,
     return TRUE;
 }
 
+static int word_to_r(void)
+{
+    cell_t value;
+
+    REQUIRE_STACK(1);
+
+    if (rsp >= RETURN_STACK_SIZE)
+    {
+        error("return stack overflow");
+        return FALSE;
+    }
+
+    POP_UNCHECKED(value);
+    RPUSH_UNCHECKED(value);
+
+    return TRUE;
+}
+
+static int word_from_r(void)
+{
+    cell_t value;
+
+    if (rsp == 0)
+    {
+        error("return stack underflow");
+        return FALSE;
+    }
+
+    REQUIRE_SPACE(1);
+
+    RPOP_UNCHECKED(value);
+    PUSH_UNCHECKED(value);
+
+    return TRUE;
+}
+
+static int word_r_fetch(void)
+{
+    if (rsp == 0)
+    {
+        error("return stack underflow");
+        return FALSE;
+    }
+
+    REQUIRE_SPACE(1);
+
+    PUSH_UNCHECKED(return_stack[rsp - 1]);
+
+    return TRUE;
+}
+
+static int word_dot_rs(void)
+{
+    idx_t i;
+
+    printf("<R:%u> ", (unsigned)rsp);
+
+    for (i = 0; i < rsp; ++i)
+    {
+        printf("%d ", return_stack[i]);
+    }
+
+    putchar('\n');
+
+    return TRUE;
+}
+
 static void init_dictionary(void)
 {
     add_builtin(TEXT_LITERAL("+"), word_add, 0);
@@ -1208,6 +1306,10 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("until"), word_until, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("while"), word_while, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("repeat"), word_repeat, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL(">r"), word_to_r, 0);
+    add_builtin(TEXT_LITERAL("r>"), word_from_r, 0);
+    add_builtin(TEXT_LITERAL("r@"), word_r_fetch, 0);
+    add_builtin(TEXT_LITERAL(".rs"), word_dot_rs, 0);
 }
 
 int main(void)
