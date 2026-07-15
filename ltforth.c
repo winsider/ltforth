@@ -60,7 +60,8 @@ typedef enum
     OP_DO,
     OP_LOOP,
     OP_I,
-    OP_J
+    OP_J,
+    OP_PLUS_LOOP
 } opcode_t;
 
 typedef enum
@@ -663,6 +664,47 @@ static int execute_colon_word(Word* word)
                 break;
             }
 
+            case OP_PLUS_LOOP:
+            {
+                cell_t increment;
+                cell_t index;
+                cell_t limit;
+                cell_t next;
+
+                REQUIRE_STACK(1);
+
+                if (rsp < 2)
+                {
+                    error("return stack underflow");
+                    return FALSE;
+                }
+
+                increment = data_stack[--dsp];
+
+                if (increment <= 0)
+                {
+                    error("+loop only supports positive increments");
+                    return FALSE;
+                }
+
+                index = return_stack[rsp - 1];
+                limit = return_stack[rsp - 2];
+
+                next = index + increment;
+
+                if (next >= limit)
+                {
+                    rsp -= 2;
+                }
+                else
+                {
+                    return_stack[rsp - 1] = next;
+                    ip = instruction->arg.branch_target;
+                }
+
+                break;
+            }
+
             default:
                 error("invalid instruction");
                 return FALSE;
@@ -1084,6 +1126,10 @@ static int word_see(void)
                 printf("j");
                 break;
 
+            case OP_PLUS_LOOP:
+                printf("+loop %u", (unsigned)instruction->arg.branch_target);
+                break;
+
             default:
                 printf("<invalid instruction>");
                 break;
@@ -1472,6 +1518,41 @@ static int word_j(void)
     return instruction != NULL;
 }
 
+static int word_plus_loop(void)
+{
+    ControlEntry* control;
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("+LOOP is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_DO)
+    {
+        error("+LOOP without DO");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_PLUS_LOOP);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    instruction->arg.branch_target = control->target;
+
+    control->branch_instruction->arg.branch_target =
+        current_definition->impl.colon.length;
+
+    --csp;
+
+    return TRUE;
+}
+
 static void init_dictionary(void)
 {
     add_builtin(TEXT_LITERAL("+"), word_add, 0);
@@ -1511,6 +1592,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("loop"), word_loop, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("j"), word_j, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("+loop"), word_plus_loop, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
