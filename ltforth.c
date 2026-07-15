@@ -49,7 +49,10 @@ typedef enum
     OP_CALL,
     OP_LIT,
     OP_BRANCH,
-    OP_BRANCH_IF_ZERO
+    OP_BRANCH_IF_ZERO,
+    OP_DO,
+    OP_LOOP,
+    OP_I
 } opcode_t;
 
 typedef enum
@@ -57,7 +60,8 @@ typedef enum
     CONTROL_IF,
     CONTROL_ELSE,
     CONTROL_BEGIN,
-    CONTROL_WHILE
+    CONTROL_WHILE,
+    CONTROL_DO
 } control_type_t;
 
 typedef struct
@@ -263,7 +267,8 @@ static Word* allot_word(void)
 }
 
 static int push_control(control_type_t type,
-                        Instruction* branch_instruction)
+                        Instruction* branch_instruction,
+                        idx_t target)
 {
     if (csp >= CONTROL_STACK_SIZE)
     {
@@ -273,7 +278,7 @@ static int push_control(control_type_t type,
 
     control_stack[csp].type = type;
     control_stack[csp].branch_instruction = branch_instruction;
-    control_stack[csp].target = 0;
+    control_stack[csp].target = target;
     ++csp;
 
     return TRUE;
@@ -562,6 +567,77 @@ static int execute_colon_word(Word* word)
                     ip = instruction->arg.branch_target;
                 }
                 break;
+
+            case OP_DO:
+            {
+                cell_t start;
+                cell_t limit;
+
+                REQUIRE_STACK(2);
+
+                start = data_stack[--dsp];
+                limit = data_stack[--dsp];
+
+                if (start == limit)
+                {
+                    ip = instruction->arg.branch_target;
+                    break;
+                }
+
+                if ((RETURN_STACK_SIZE - rsp) < 2)
+                {
+                    error("return stack overflow");
+                    return FALSE;
+                }
+
+                return_stack[rsp++] = limit;
+                return_stack[rsp++] = start;
+
+                break;
+            }
+
+            case OP_I:
+            {
+                if (rsp < 2)
+                {
+                    error("return stack underflow");
+                    return FALSE;
+                }
+
+                if (!push(return_stack[rsp - 1]))
+                {
+                    return FALSE;
+                }
+
+                break;
+            }
+
+            case OP_LOOP:
+            {
+                cell_t index;
+                cell_t limit;
+
+                if (rsp < 2)
+                {
+                    error("return stack underflow");
+                    return FALSE;
+                }
+
+                index = return_stack[rsp - 1] + 1;
+                limit = return_stack[rsp - 2];
+
+                if (index == limit)
+                {
+                    rsp -= 2;
+                }
+                else
+                {
+                    return_stack[rsp - 1] = index;
+                    ip = instruction->arg.branch_target;
+                }
+
+                break;
+            }
 
             default:
                 error("invalid instruction");
@@ -995,7 +1071,7 @@ static int word_if(void)
         return FALSE;
     }
 
-    return push_control(CONTROL_IF, branch);
+    return push_control(CONTROL_IF, branch, 0);
 }
 
 static int word_else(void)
@@ -1071,18 +1147,7 @@ static int word_begin(void)
         return FALSE;
     }
 
-    if (csp >= CONTROL_STACK_SIZE)
-    {
-        error("control stack overflow");
-        return FALSE;
-    }
-
-    control_stack[csp].type = CONTROL_BEGIN;
-    control_stack[csp].target = current_instruction_index();
-    control_stack[csp].branch_instruction = NULL;
-    ++csp;
-
-    return TRUE;
+    return push_control(CONTROL_BEGIN, NULL, current_instruction_index());
 }
 
 static int word_until(void)
@@ -1275,6 +1340,82 @@ static int word_dot_rs(void)
     return TRUE;
 }
 
+static int word_do(void)
+{
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("DO is compile-only");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_DO);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    instruction->arg.branch_target = 0; /* patched by loop */
+
+    return push_control(CONTROL_DO,
+                        instruction,
+                        current_definition->impl.colon.length);
+}
+
+static int word_loop(void)
+{
+    ControlEntry* control;
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("LOOP is compile-only");
+        return FALSE;
+    }
+
+    control = top_control();
+
+    if (control == NULL || control->type != CONTROL_DO)
+    {
+        error("LOOP without DO");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_LOOP);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    instruction->arg.branch_target = control->target;
+
+    /*
+     * Patch OP_DO to jump to the instruction after OP_LOOP
+     * when start == limit.
+     */
+    control->branch_instruction->arg.branch_target =
+        current_definition->impl.colon.length;
+
+    --csp;
+
+    return TRUE;
+}
+
+static int word_i(void)
+{
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("I is compile-only");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_I);
+    return instruction != NULL;
+}
+
 static void init_dictionary(void)
 {
     add_builtin(TEXT_LITERAL("+"), word_add, 0);
@@ -1310,6 +1451,9 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("r>"), word_from_r, 0);
     add_builtin(TEXT_LITERAL("r@"), word_r_fetch, 0);
     add_builtin(TEXT_LITERAL(".rs"), word_dot_rs, 0);
+    add_builtin(TEXT_LITERAL("do"), word_do, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("loop"), word_loop, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
 }
 
 int main(void)
