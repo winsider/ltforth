@@ -13,6 +13,7 @@
 #define RETURN_STACK_SIZE 32
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
+#define NO_BRANCH_TARGET ((idx_t)-1)
 #define DICTIONARY_WORDS 64
 #define DICTIONARY_NAME_BYTES 512
 #define INSTRUCTION_SPACE_SIZE 512
@@ -61,7 +62,8 @@ typedef enum
     OP_LOOP,
     OP_I,
     OP_J,
-    OP_PLUS_LOOP
+    OP_PLUS_LOOP,
+    OP_LEAVE
 } opcode_t;
 
 typedef enum
@@ -88,8 +90,9 @@ typedef struct
 typedef struct
 {
     control_type_t type;
-    idx_t target;
     Instruction* branch_instruction;
+    idx_t target;
+    idx_t leave_chain;
 } ControlEntry;
 
 struct Word
@@ -288,6 +291,7 @@ static int push_control(control_type_t type,
     control_stack[csp].type = type;
     control_stack[csp].branch_instruction = branch_instruction;
     control_stack[csp].target = target;
+    control_stack[csp].leave_chain = NO_BRANCH_TARGET;
     ++csp;
 
     return TRUE;
@@ -345,6 +349,52 @@ static Word* find_word(const Token* token)
     }
 
     return NULL;
+}
+
+static int find_nearest_do_control(idx_t* index)
+{
+    idx_t i;
+
+    for (i = csp; i > 0; --i)
+    {
+        if (control_stack[i - 1].type == CONTROL_DO)
+        {
+            *index = i - 1;
+            return TRUE;
+        }
+    }
+
+    error("LEAVE without DO");
+    return FALSE;
+}
+
+static int patch_leave_chain(idx_t leave_index, idx_t target)
+{
+    Instruction* instruction;
+    idx_t next;
+
+    while (leave_index != NO_BRANCH_TARGET)
+    {
+        if (leave_index >= current_definition->impl.colon.length)
+        {
+            error("invalid leave target");
+            return FALSE;
+        }
+
+        instruction = &current_definition->impl.colon.first[leave_index];
+
+        if (instruction->op != OP_LEAVE)
+        {
+            error("invalid leave instruction");
+            return FALSE;
+        }
+
+        next = instruction->arg.branch_target;
+        instruction->arg.branch_target = target;
+        leave_index = next;
+    }
+
+    return TRUE;
 }
 
 static int parse_number(const Token* token, cell_t* value)
@@ -701,6 +751,26 @@ static int execute_colon_word(Word* word)
                     return_stack[rsp - 1] = next;
                     ip = instruction->arg.branch_target;
                 }
+
+                break;
+            }
+
+            case OP_LEAVE:
+            {
+                if (rsp < 2)
+                {
+                    error("return stack underflow");
+                    return FALSE;
+                }
+
+                if (instruction->arg.branch_target > word->impl.colon.length)
+                {
+                    error("invalid leave target");
+                    return FALSE;
+                }
+
+                rsp -= 2;
+                ip = instruction->arg.branch_target;
 
                 break;
             }
@@ -1130,6 +1200,11 @@ static int word_see(void)
                 printf("+loop %u", (unsigned)instruction->arg.branch_target);
                 break;
 
+            case OP_LEAVE:
+                printf("leave %u",
+                       (unsigned)instruction->arg.branch_target);
+                break;
+
             default:
                 printf("<invalid instruction>");
                 break;
@@ -1455,6 +1530,7 @@ static int word_loop(void)
 {
     ControlEntry* control;
     Instruction* instruction;
+    idx_t exit_target;
 
     if (state != STATE_COMPILE)
     {
@@ -1478,15 +1554,16 @@ static int word_loop(void)
 
     instruction->arg.branch_target = control->target;
 
-    /*
-     * Patch OP_DO to jump to the instruction after OP_LOOP
-     * when start == limit.
-     */
-    control->branch_instruction->arg.branch_target =
-        current_definition->impl.colon.length;
+    exit_target = current_definition->impl.colon.length;
+
+    control->branch_instruction->arg.branch_target = exit_target;
+
+    if (!patch_leave_chain(control->leave_chain, exit_target))
+    {
+        return FALSE;
+    }
 
     --csp;
-
     return TRUE;
 }
 
@@ -1522,6 +1599,7 @@ static int word_plus_loop(void)
 {
     ControlEntry* control;
     Instruction* instruction;
+    idx_t exit_target;
 
     if (state != STATE_COMPILE)
     {
@@ -1545,10 +1623,50 @@ static int word_plus_loop(void)
 
     instruction->arg.branch_target = control->target;
 
-    control->branch_instruction->arg.branch_target =
-        current_definition->impl.colon.length;
+    exit_target = current_definition->impl.colon.length;
+
+    control->branch_instruction->arg.branch_target = exit_target;
+
+    if (!patch_leave_chain(control->leave_chain, exit_target))
+    {
+        return FALSE;
+    }
 
     --csp;
+    return TRUE;
+}
+
+static int word_leave(void)
+{
+    idx_t do_index;
+    idx_t leave_index;
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("LEAVE is compile-only");
+        return FALSE;
+    }
+
+    if (!find_nearest_do_control(&do_index))
+    {
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_LEAVE);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    leave_index = current_definition->impl.colon.length - 1;
+
+    /*
+     * Temporarily use branch_target as a linked-list pointer.
+     * Later, LOOP/+LOOP patches all leaves to the final exit target.
+     */
+    instruction->arg.branch_target = control_stack[do_index].leave_chain;
+    control_stack[do_index].leave_chain = leave_index;
 
     return TRUE;
 }
@@ -1593,6 +1711,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("j"), word_j, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("+loop"), word_plus_loop, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("leave"), word_leave, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
