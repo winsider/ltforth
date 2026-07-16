@@ -26,6 +26,7 @@
 #define WORD_TYPE_MASK       0xf0
 #define WORD_TYPE_BUILTIN    0x10
 #define WORD_TYPE_COLON      0x20
+#define WORD_TYPE_CONSTANT   0x30
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -106,7 +107,7 @@ struct Word
     union
     {
         word_func_t builtin;
-
+        cell_t constant;
         struct
         {
             Instruction* first;
@@ -597,6 +598,11 @@ static int word_is_colon(const Word* word)
     return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_COLON;
 }
 
+static int word_is_constant(const Word* word)
+{
+    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_CONSTANT;
+}
+
 static int execute_colon_word(Word* word);
 
 static int execute_word(Word* word)
@@ -609,6 +615,11 @@ static int execute_word(Word* word)
     if (word_is_colon(word))
     {
         return execute_colon_word(word);
+    }
+
+    if (word_is_constant(word))
+    {
+        return push(word->impl.constant);
     }
 
     error("invalid word type");
@@ -1182,6 +1193,13 @@ static int word_see(void)
     {
         print_text(&word->name);
         printf(" is builtin\n");
+        return TRUE;
+    }
+
+    if (word_is_constant(word))
+    {
+        print_text(&word->name);
+        printf(" is constant %d\n", word->impl.constant);
         return TRUE;
     }
 
@@ -1832,6 +1850,40 @@ static int word_cstore(void)
     return TRUE;
 }
 
+static int word_constant(void)
+{
+    Token name;
+    Word* word;
+    cell_t value;
+
+    REQUIRE_STACK(1);
+
+    if (!next_token(&name))
+    {
+        error("expected name after CONSTANT");
+        return FALSE;
+    }
+
+    value = data_stack[--dsp];
+
+    word = allot_word();
+    if (word == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!copy_name(&word->name, &name))
+    {
+        error("dictionary name space full");
+        return FALSE;
+    }
+
+    word->flags = WORD_TYPE_CONSTANT;
+    word->impl.constant = value;
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -1900,6 +1952,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("!"),     word_store,  0);
     add_builtin(TEXT_LITERAL("c@"),    word_cfetch, 0);
     add_builtin(TEXT_LITERAL("c!"),    word_cstore, 0);
+    add_builtin(TEXT_LITERAL("constant"), word_constant, 0);
 }
 
 static int process_input_buffer(void)
