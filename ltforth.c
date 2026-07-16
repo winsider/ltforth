@@ -343,6 +343,13 @@ static void print_text(const Text* text)
     printf("%.*s", (int)text->length, text->start);
 }
 
+static void print_hex_byte(byte_t value)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    putchar(digits[(value >> 4) & 0x0f]);
+    putchar(digits[value & 0x0f]);
+}
+
 static int valid_byte_address(addr_t address)
 {
     return address < DATA_SPACE_SIZE;
@@ -2060,6 +2067,40 @@ static int word_cell_plus(void)
     return TRUE;
 }
 
+static int word_dump(void)
+{
+    addr_t address;
+    cell_t count;
+    cell_t i;
+
+    REQUIRE_STACK(2);
+
+    count = data_stack[--dsp];
+    address = (addr_t)data_stack[--dsp];
+
+    if (count < 0)
+    {
+        error("negative dump count");
+        return FALSE;
+    }
+
+    if ((addr_t)count > DATA_SPACE_SIZE - address)
+    {
+        error("invalid dump range");
+        return FALSE;
+    }
+
+    for (i = 0; i < count; ++i)
+    {
+        print_hex_byte(data_space[address + (addr_t)i]);
+        putchar(' ');
+    }
+
+    putchar('\n');
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2137,6 +2178,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("cell"),  word_cell,      0);
     add_builtin(TEXT_LITERAL("cells"), word_cells,     0);
     add_builtin(TEXT_LITERAL("cell+"), word_cell_plus, 0);
+    add_builtin(TEXT_LITERAL("dump"), word_dump, 0);
 }
 
 static int process_input_buffer(void)
