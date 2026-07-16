@@ -1947,6 +1947,48 @@ static int word_variable(void)
     return TRUE;
 }
 
+static int word_plus_store(void)
+{
+    addr_t address;
+    cell_t value;
+    cell_t current;
+
+    REQUIRE_STACK(2);
+
+    address = (addr_t)data_stack[dsp - 1];
+    value = data_stack[dsp - 2];
+
+    if (!valid_cell_address(address))
+    {
+        error("invalid cell address");
+        return FALSE;
+    }
+
+    current = read_cell(address);
+    write_cell(address, (cell_t)(current + value));
+
+    dsp -= 2;
+    return TRUE;
+}
+
+static int word_question(void)
+{
+    addr_t address;
+
+    REQUIRE_STACK(1);
+
+    address = (addr_t)data_stack[--dsp];
+
+    if (!valid_cell_address(address))
+    {
+        error("invalid cell address");
+        return FALSE;
+    }
+
+    printf("%d ", read_cell(address));
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2017,6 +2059,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("c!"),    word_cstore, 0);
     add_builtin(TEXT_LITERAL("constant"), word_constant, 0);
     add_builtin(TEXT_LITERAL("variable"), word_variable, 0);
+    add_builtin(TEXT_LITERAL("+!"), word_plus_store, 0);
+    add_builtin(TEXT_LITERAL("?"), word_question, 0);
 }
 
 static int process_input_buffer(void)
