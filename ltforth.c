@@ -1989,6 +1989,56 @@ static int word_question(void)
     return TRUE;
 }
 
+static int word_create(void)
+{
+    Token name;
+    Word* word;
+    addr_t address;
+
+    if (!next_token(&name))
+    {
+        error("expected name after CREATE");
+        return FALSE;
+    }
+
+    address = data_here;
+
+    word = allot_word();
+    if (word == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!copy_name(&word->name, &name))
+    {
+        error("dictionary name space full");
+        return FALSE;
+    }
+
+    word->flags = WORD_TYPE_VARIABLE;
+    word->impl.variable = address;
+
+    return TRUE;
+}
+
+static int word_ccomma(void)
+{
+    cell_t value;
+
+    REQUIRE_STACK(1);
+
+    if (data_here >= DATA_SPACE_SIZE)
+    {
+        error("data space full");
+        return FALSE;
+    }
+
+    value = data_stack[--dsp];
+    data_space[data_here++] = (byte_t)value;
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2061,6 +2111,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("variable"), word_variable, 0);
     add_builtin(TEXT_LITERAL("+!"), word_plus_store, 0);
     add_builtin(TEXT_LITERAL("?"), word_question, 0);
+    add_builtin(TEXT_LITERAL("create"), word_create, 0);
+    add_builtin(TEXT_LITERAL("c,"), word_ccomma, 0);
 }
 
 static int process_input_buffer(void)
