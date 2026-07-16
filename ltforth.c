@@ -27,7 +27,7 @@
 #define WORD_TYPE_BUILTIN    0x10
 #define WORD_TYPE_COLON      0x20
 #define WORD_TYPE_CONSTANT   0x30
-#define WORD_TYPE_VARIABLE   0x40
+#define WORD_TYPE_DATA       0x40
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -68,7 +68,8 @@ typedef enum
     OP_I,
     OP_J,
     OP_PLUS_LOOP,
-    OP_LEAVE
+    OP_LEAVE,
+    OP_DOES
 } opcode_t;
 
 typedef enum
@@ -109,12 +110,20 @@ struct Word
     {
         word_func_t builtin;
         cell_t constant;
-        addr_t variable;
+
         struct
         {
             Instruction* first;
             idx_t length;
         } colon;
+
+        struct
+        {
+            addr_t address;
+            Instruction* does_first;
+            idx_t does_length;
+        } data;
+
     } impl;
 };
 
@@ -160,6 +169,8 @@ static Word* current_definition = NULL;
 
 static byte_t data_space[DATA_SPACE_SIZE];
 static addr_t data_here = 0;
+
+static Word* latest_created_word = NULL;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
@@ -612,54 +623,31 @@ static int word_is_constant(const Word* word)
     return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_CONSTANT;
 }
 
-static int word_is_variable(const Word* word)
+static int word_is_data(const Word* word)
 {
-    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_VARIABLE;
+    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_DATA;
 }
 
-static int execute_colon_word(Word* word);
+//static int execute_colon_word(Word* word);
+static int execute_word(Word* word);
 
-static int execute_word(Word* word)
-{
-    if (word_is_builtin(word))
-    {
-        return word->impl.builtin();
-    }
-
-    if (word_is_colon(word))
-    {
-        return execute_colon_word(word);
-    }
-
-    if (word_is_constant(word))
-    {
-        return push(word->impl.constant);
-    }
-
-    if (word_is_variable(word))
-    {
-        return push((cell_t)word->impl.variable);
-    }
-
-    error("invalid word type");
-    return FALSE;
-}
-
-static int execute_colon_word(Word* word)
+static int execute_instructions(Instruction* first, idx_t length)
 {
     idx_t ip;
-    Instruction* instruction;
     cell_t flag;
 
     ip = 0;
 
-    while (ip < word->impl.colon.length)
+    while (ip < length)
     {
-        instruction = &word->impl.colon.first[ip++];
+        Instruction* instruction;
+
+        instruction = &first[ip];
+        ++ip;
 
         switch (instruction->op)
         {
-            case OP_CALL:
+             case OP_CALL:
                 if (!execute_word(instruction->arg.word))
                 {
                     return FALSE;
@@ -674,8 +662,7 @@ static int execute_colon_word(Word* word)
                 break;
 
             case OP_BRANCH:
-                if (instruction->arg.branch_target >
-                    word->impl.colon.length)
+                if (instruction->arg.branch_target > length)
                 {
                     error("invalid branch target");
                     return FALSE;
@@ -691,8 +678,7 @@ static int execute_colon_word(Word* word)
 
                 if (flag == 0)
                 {
-                    if (instruction->arg.branch_target >
-                        word->impl.colon.length)
+                    if (instruction->arg.branch_target > length)
                     {
                         error("invalid branch target");
                         return FALSE;
@@ -838,7 +824,7 @@ static int execute_colon_word(Word* word)
                     return FALSE;
                 }
 
-                if (instruction->arg.branch_target > word->impl.colon.length)
+                if (instruction->arg.branch_target > length)
                 {
                     error("invalid leave target");
                     return FALSE;
@@ -850,13 +836,77 @@ static int execute_colon_word(Word* word)
                 break;
             }
 
+            case OP_DOES:
+            {
+                if (latest_created_word == NULL || !word_is_data(latest_created_word))
+                {
+                    error("DOES> without CREATE");
+                    return FALSE;
+                }
+
+                latest_created_word->impl.data.does_first =
+                    &first[instruction->arg.branch_target];
+
+                latest_created_word->impl.data.does_length =
+                    length - instruction->arg.branch_target;
+
+                /*
+                 * Important: stop executing the defining word.
+                 * The code after DOES> belongs to the created word, not now.
+                 */
+                return TRUE;
+            }
+
             default:
                 error("invalid instruction");
                 return FALSE;
-        }
+       }
     }
 
     return TRUE;
+}
+
+static int execute_colon_word(const Word* word)
+{
+    return execute_instructions(word->impl.colon.first,
+                                word->impl.colon.length);
+}
+
+static int execute_word(Word* word)
+{
+    if (word_is_builtin(word))
+    {
+        return word->impl.builtin();
+    }
+
+    if (word_is_colon(word))
+    {
+        return execute_colon_word(word);
+    }
+
+    if (word_is_constant(word))
+    {
+        return push(word->impl.constant);
+    }
+
+    if (word_is_data(word))
+    {
+        if (!push((cell_t)word->impl.data.address))
+        {
+            return FALSE;
+        }
+
+        if (word->impl.data.does_first != NULL)
+        {
+            return execute_instructions(word->impl.data.does_first,
+                                        word->impl.data.does_length);
+        }
+
+        return TRUE;
+    }
+
+    error("invalid word type");
+    return FALSE;
 }
 
 static int process_token(const Token* token)
@@ -1222,10 +1272,19 @@ static int word_see(void)
         return TRUE;
     }
 
-    if (word_is_variable(word))
+    if (word_is_data(word))
     {
         print_text(&word->name);
-        printf(" is variable %u\n", (unsigned)word->impl.variable);
+        printf(" is data %u",
+               (unsigned)word->impl.data.address);
+
+        if (word->impl.data.does_first != NULL)
+        {
+            printf(" does %u instructions",
+                   (unsigned)word->impl.data.does_length);
+        }
+
+        putchar('\n');
         return TRUE;
     }
 
@@ -1292,6 +1351,10 @@ static int word_see(void)
             case OP_LEAVE:
                 printf("leave %u",
                        (unsigned)instruction->arg.branch_target);
+                break;
+
+            case OP_DOES:
+                printf("does> %u", (unsigned)instruction->arg.branch_target);
                 break;
 
             default:
@@ -1948,8 +2011,12 @@ static int word_variable(void)
         return FALSE;
     }
 
-    word->flags = WORD_TYPE_VARIABLE;
-    word->impl.variable = address;
+    word->flags = WORD_TYPE_DATA;
+    word->impl.data.address = address;
+    word->impl.data.does_first = NULL;
+    word->impl.data.does_length = 0;
+
+    latest_created_word = word;
 
     return TRUE;
 }
@@ -2022,8 +2089,12 @@ static int word_create(void)
         return FALSE;
     }
 
-    word->flags = WORD_TYPE_VARIABLE;
-    word->impl.variable = address;
+    word->flags = WORD_TYPE_DATA;
+    word->impl.data.address = address;
+    word->impl.data.does_first = NULL;
+    word->impl.data.does_length = 0;
+
+    latest_created_word = word;
 
     return TRUE;
 }
@@ -2097,6 +2168,30 @@ static int word_dump(void)
     }
 
     putchar('\n');
+
+    return TRUE;
+}
+
+static int word_does(void)
+{
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error("DOES> is compile-only");
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_DOES);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    /*
+     * The does-body starts at the instruction after OP_DOES.
+     */
+    instruction->arg.branch_target = current_definition->impl.colon.length;
 
     return TRUE;
 }
@@ -2179,6 +2274,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("cells"), word_cells,     0);
     add_builtin(TEXT_LITERAL("cell+"), word_cell_plus, 0);
     add_builtin(TEXT_LITERAL("dump"), word_dump, 0);
+    add_builtin(TEXT_LITERAL("does>"), word_does, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
