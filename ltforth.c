@@ -4,7 +4,7 @@
 #include <arm/limits.h>
 
 /* CONSTANTS */
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 #define LINE_SIZE 128
 #define TRUE 1
 #define FALSE 0
@@ -18,6 +18,8 @@
 #define DICTIONARY_NAME_BYTES 512
 #define INSTRUCTION_SPACE_SIZE 512
 #define WORDS_PER_LINE 4
+#define DATA_SPACE_SIZE 4096
+#define CELL_SIZE ((idx_t)sizeof(cell_t))
 
 #define WORD_FLAG_IMMEDIATE  0x01
 
@@ -51,6 +53,7 @@ typedef unsigned ucell_t;
 typedef unsigned char byte_t;
 typedef size_t idx_t;
 typedef unsigned char word_flags_t;
+typedef ucell_t addr_t;
 
 typedef enum
 {
@@ -151,6 +154,9 @@ static dictionary_mark_t definition_mark;
 
 static forth_state_t state = STATE_INTERPRET;
 static Word* current_definition = NULL;
+
+static byte_t data_space[DATA_SPACE_SIZE];
+static addr_t data_here = 0;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
@@ -332,6 +338,45 @@ static int text_equal(const Text* t1, const Text* t2)
 static void print_text(const Text* text)
 {
     printf("%.*s", (int)text->length, text->start);
+}
+
+static int valid_byte_address(addr_t address)
+{
+    return address < DATA_SPACE_SIZE;
+}
+
+static int valid_cell_address(addr_t address)
+{
+    return address <= DATA_SPACE_SIZE - CELL_SIZE;
+}
+
+static cell_t read_cell(addr_t address)
+{
+    cell_t value;
+    byte_t* p;
+    idx_t i;
+
+    p = (byte_t*)&value;
+
+    for (i = 0; i < CELL_SIZE; ++i)
+    {
+        p[i] = data_space[address + i];
+    }
+
+    return value;
+}
+
+static void write_cell(addr_t address, cell_t value)
+{
+    byte_t* p;
+    idx_t i;
+
+    p = (byte_t*)&value;
+
+    for (i = 0; i < CELL_SIZE; ++i)
+    {
+        data_space[address + i] = p[i];
+    }
 }
 
 static Word* find_word(const Token* token)
@@ -1416,26 +1461,6 @@ static int word_repeat(void)
     return TRUE;
 }
 
-static int add_builtin(Token name,
-                       word_func_t function,
-                       word_flags_t flags)
-{
-    Word* word;
-
-    word = allot_word();
-    if (word == NULL)
-    {
-        error("dictionary full");
-        return FALSE;
-    }
-
-    word->name = name;
-    word->flags = WORD_TYPE_BUILTIN | flags;
-    word->impl.builtin = function;
-
-    return TRUE;
-}
-
 static int word_to_r(void)
 {
     cell_t value;
@@ -1671,6 +1696,162 @@ static int word_leave(void)
     return TRUE;
 }
 
+static int word_here(void)
+{
+    REQUIRE_SPACE(1);
+
+    PUSH_UNCHECKED((cell_t)data_here);
+
+    return TRUE;
+}
+
+static int word_allot(void)
+{
+    cell_t count;
+
+    REQUIRE_STACK(1);
+
+    count = data_stack[--dsp];
+
+    if (count < 0)
+    {
+        error("negative allot not supported");
+        return FALSE;
+    }
+
+    if ((addr_t)count > DATA_SPACE_SIZE - data_here)
+    {
+        error("data space full");
+        return FALSE;
+    }
+
+    data_here += (addr_t)count;
+
+    return TRUE;
+}
+
+static int word_comma(void)
+{
+    cell_t value;
+
+    REQUIRE_STACK(1);
+
+    if (DATA_SPACE_SIZE - data_here < CELL_SIZE)
+    {
+        error("data space full");
+        return FALSE;
+    }
+
+    value = data_stack[--dsp];
+
+    write_cell(data_here, value);
+    data_here += CELL_SIZE;
+
+    return TRUE;
+}
+
+static int word_fetch(void)
+{
+    addr_t address;
+
+    REQUIRE_STACK(1);
+
+    address = (addr_t)data_stack[dsp - 1];
+
+    if (!valid_cell_address(address))
+    {
+        error("invalid cell address");
+        return FALSE;
+    }
+
+    data_stack[dsp - 1] = read_cell(address);
+
+    return TRUE;
+}
+
+static int word_store(void)
+{
+    addr_t address;
+    cell_t value;
+
+    REQUIRE_STACK(2);
+
+    address = (addr_t)data_stack[dsp - 1];
+    value = data_stack[dsp - 2];
+
+    if (!valid_cell_address(address))
+    {
+        error("invalid cell address");
+        return FALSE;
+    }
+
+    write_cell(address, value);
+    dsp -= 2;
+
+    return TRUE;
+}
+
+static int word_cfetch(void)
+{
+    addr_t address;
+
+    REQUIRE_STACK(1);
+
+    address = (addr_t)data_stack[dsp - 1];
+
+    if (!valid_byte_address(address))
+    {
+        error("invalid byte address");
+        return FALSE;
+    }
+
+    data_stack[dsp - 1] = (cell_t)data_space[address];
+
+    return TRUE;
+}
+
+static int word_cstore(void)
+{
+    addr_t address;
+    cell_t value;
+
+    REQUIRE_STACK(2);
+
+    address = (addr_t)data_stack[dsp - 1];
+    value = data_stack[dsp - 2];
+
+    if (!valid_byte_address(address))
+    {
+        error("invalid byte address");
+        return FALSE;
+    }
+
+    data_space[address] = (byte_t)value;
+    dsp -= 2;
+
+    return TRUE;
+}
+
+static int add_builtin(Token name,
+                       word_func_t function,
+                       word_flags_t flags)
+{
+    Word* word;
+
+    word = allot_word();
+    if (word == NULL)
+    {
+        error("dictionary full");
+        return FALSE;
+    }
+
+    word->name = name;
+    word->flags = WORD_TYPE_BUILTIN | flags;
+    word->impl.builtin = function;
+
+    return TRUE;
+}
+
 static void init_dictionary(void)
 {
     add_builtin(TEXT_LITERAL("+"), word_add, 0);
@@ -1712,6 +1893,13 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("j"), word_j, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("+loop"), word_plus_loop, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("leave"), word_leave, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("here"),  word_here,   0);
+    add_builtin(TEXT_LITERAL("allot"), word_allot,  0);
+    add_builtin(TEXT_LITERAL(","),     word_comma,  0);
+    add_builtin(TEXT_LITERAL("@"),     word_fetch,  0);
+    add_builtin(TEXT_LITERAL("!"),     word_store,  0);
+    add_builtin(TEXT_LITERAL("c@"),    word_cfetch, 0);
+    add_builtin(TEXT_LITERAL("c!"),    word_cstore, 0);
 }
 
 static int process_input_buffer(void)
