@@ -27,6 +27,7 @@
 #define WORD_TYPE_BUILTIN    0x10
 #define WORD_TYPE_COLON      0x20
 #define WORD_TYPE_CONSTANT   0x30
+#define WORD_TYPE_VARIABLE   0x40
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
@@ -108,6 +109,7 @@ struct Word
     {
         word_func_t builtin;
         cell_t constant;
+        addr_t variable;
         struct
         {
             Instruction* first;
@@ -603,6 +605,11 @@ static int word_is_constant(const Word* word)
     return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_CONSTANT;
 }
 
+static int word_is_variable(const Word* word)
+{
+    return (word->flags & WORD_TYPE_MASK) == WORD_TYPE_VARIABLE;
+}
+
 static int execute_colon_word(Word* word);
 
 static int execute_word(Word* word)
@@ -620,6 +627,11 @@ static int execute_word(Word* word)
     if (word_is_constant(word))
     {
         return push(word->impl.constant);
+    }
+
+    if (word_is_variable(word))
+    {
+        return push((cell_t)word->impl.variable);
     }
 
     error("invalid word type");
@@ -1200,6 +1212,13 @@ static int word_see(void)
     {
         print_text(&word->name);
         printf(" is constant %d\n", word->impl.constant);
+        return TRUE;
+    }
+
+    if (word_is_variable(word))
+    {
+        print_text(&word->name);
+        printf(" is variable %u\n", (unsigned)word->impl.variable);
         return TRUE;
     }
 
@@ -1884,6 +1903,50 @@ static int word_constant(void)
     return TRUE;
 }
 
+static int word_variable(void)
+{
+    Token name;
+    Word* word;
+    addr_t address;
+
+    if (!next_token(&name))
+    {
+        error("expected name after VARIABLE");
+        return FALSE;
+    }
+
+    if (DATA_SPACE_SIZE - data_here < CELL_SIZE)
+    {
+        error("data space full");
+        return FALSE;
+    }
+
+    address = data_here;
+
+    /*
+     * Standard-ish behavior: initialize variable storage to zero.
+     */
+    write_cell(address, 0);
+    data_here += CELL_SIZE;
+
+    word = allot_word();
+    if (word == NULL)
+    {
+        return FALSE;
+    }
+
+    if (!copy_name(&word->name, &name))
+    {
+        error("dictionary name space full");
+        return FALSE;
+    }
+
+    word->flags = WORD_TYPE_VARIABLE;
+    word->impl.variable = address;
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -1953,6 +2016,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("c@"),    word_cfetch, 0);
     add_builtin(TEXT_LITERAL("c!"),    word_cstore, 0);
     add_builtin(TEXT_LITERAL("constant"), word_constant, 0);
+    add_builtin(TEXT_LITERAL("variable"), word_variable, 0);
 }
 
 static int process_input_buffer(void)
