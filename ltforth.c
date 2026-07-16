@@ -2039,6 +2039,27 @@ static int word_ccomma(void)
     return TRUE;
 }
 
+static int word_cell(void)
+{
+    REQUIRE_SPACE(1);
+    PUSH_UNCHECKED((cell_t)CELL_SIZE);
+    return TRUE;
+}
+
+static int word_cells(void)
+{
+    REQUIRE_STACK(1);
+    data_stack[dsp - 1] = (cell_t)(data_stack[dsp - 1] * CELL_SIZE);
+    return TRUE;
+}
+
+static int word_cell_plus(void)
+{
+    REQUIRE_STACK(1);
+    data_stack[dsp - 1] = (cell_t)(data_stack[dsp - 1] + CELL_SIZE);
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2113,6 +2134,9 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("?"), word_question, 0);
     add_builtin(TEXT_LITERAL("create"), word_create, 0);
     add_builtin(TEXT_LITERAL("c,"), word_ccomma, 0);
+    add_builtin(TEXT_LITERAL("cell"),  word_cell,      0);
+    add_builtin(TEXT_LITERAL("cells"), word_cells,     0);
+    add_builtin(TEXT_LITERAL("cell+"), word_cell_plus, 0);
 }
 
 static int process_input_buffer(void)
