@@ -11,11 +11,11 @@
 #define DATA_STACK_SIZE 64
 #define CONTROL_STACK_SIZE 16
 #define RETURN_STACK_SIZE 32
+#define TEXT_SPACE_SIZE 4096
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
 #define NO_BRANCH_TARGET ((idx_t)-1)
-#define DICTIONARY_WORDS 64
-#define DICTIONARY_NAME_BYTES 512
+#define DICTIONARY_WORDS 256
 #define INSTRUCTION_SPACE_SIZE 512
 #define WORDS_PER_LINE 4
 #define DATA_SPACE_SIZE 4096
@@ -69,7 +69,8 @@ typedef enum
     OP_J,
     OP_PLUS_LOOP,
     OP_LEAVE,
-    OP_DOES
+    OP_DOES,
+    OP_STRING
 } opcode_t;
 
 typedef enum
@@ -90,6 +91,7 @@ typedef struct
         Word* word;
         cell_t literal;
         idx_t branch_target;
+        Text string;
     } arg;
 } Instruction;
 
@@ -136,7 +138,7 @@ typedef enum
 typedef struct
 {
     idx_t word_count;
-    idx_t name_pos;
+    idx_t text_pos;
     idx_t instruction_count;
 } dictionary_mark_t;
 
@@ -156,8 +158,8 @@ static idx_t rsp = 0;
 static Word dictionary_words[DICTIONARY_WORDS];
 static idx_t dictionary_word_count = 0;
 
-static char dictionary_names[DICTIONARY_NAME_BYTES];
-static idx_t dictionary_name_pos = 0;
+static char text_space[TEXT_SPACE_SIZE];
+static idx_t text_space_pos = 0;
 
 static Instruction instruction_space[INSTRUCTION_SPACE_SIZE];
 static idx_t instruction_count = 0;
@@ -219,7 +221,7 @@ static idx_t current_instruction_index(void)
 static void restore_dictionary_mark(const dictionary_mark_t* mark)
 {
     dictionary_word_count = mark->word_count;
-    dictionary_name_pos = mark->name_pos;
+    text_space_pos = mark->text_pos;
     instruction_count = mark->instruction_count;
 }
 
@@ -327,18 +329,19 @@ static ControlEntry* top_control(void)
     return &control_stack[csp - 1];
 }
 
-static int copy_name(Token* dest, const Token* src)
+static int copy_text(Text* dest, const char* start, idx_t length)
 {
-    if (dictionary_name_pos + src->length > DICTIONARY_NAME_BYTES)
+    if (text_space_pos + length > TEXT_SPACE_SIZE)
     {
+        error("text space full");
         return FALSE;
     }
 
-    dest->start = &dictionary_names[dictionary_name_pos];
-    dest->length = src->length;
+    dest->start = &text_space[text_space_pos];
+    dest->length = length;
 
-    memcpy(&dictionary_names[dictionary_name_pos], src->start, src->length);
-    dictionary_name_pos += src->length;
+    memcpy(&text_space[text_space_pos], start, length);
+    text_space_pos += length;
 
     return TRUE;
 }
@@ -890,6 +893,12 @@ static int execute_instructions(Instruction* first, idx_t length)
                 return TRUE;
             }
 
+            case OP_STRING:
+            {
+                print_text(&instruction->arg.string);
+                break;
+            }
+
             default:
                 error("invalid instruction");
                 return FALSE;
@@ -984,6 +993,38 @@ static int process_token(const Token* token)
 
     error("unknown word while compiling");
     return FALSE;
+}
+
+static int next_string(Text* out)
+{
+    const char* start;
+    idx_t length;
+
+    if (has_more_input() &&
+        isspace((unsigned char)input_buffer[tokeniser_pos]))
+    {
+        ++tokeniser_pos;
+    }
+
+    start = input_buffer + tokeniser_pos;
+    length = 0;
+
+    while (has_more_input() &&
+           input_buffer[tokeniser_pos] != '"')
+    {
+        ++tokeniser_pos;
+        ++length;
+    }
+
+    if (!has_more_input())
+    {
+        error("unterminated string");
+        return FALSE;
+    }
+
+    ++tokeniser_pos;
+
+    return copy_text(out, start, length);
 }
 
 static int next_token(Token* out)
@@ -1205,7 +1246,7 @@ static int word_colon(void)
     }
 
     definition_mark.word_count = dictionary_word_count;
-    definition_mark.name_pos = dictionary_name_pos;
+    definition_mark.text_pos = text_space_pos;
     definition_mark.instruction_count = instruction_count;
 
     word = allot_word();
@@ -1216,7 +1257,7 @@ static int word_colon(void)
         return FALSE;
     }
 
-    if (!copy_name(&word->name, &name))
+    if (!copy_text(&word->name, name.start, name.length))
     {
         error("dictionary name space full");
         return FALSE;
@@ -1393,6 +1434,12 @@ static int word_see(void)
 
             case OP_DOES:
                 printf("does> %u", (unsigned)instruction->arg.branch_target);
+                break;
+
+            case OP_STRING:
+                printf(".\" ");
+                print_text(&instruction->arg.string);
+                putchar('"');
                 break;
 
             default:
@@ -1999,7 +2046,7 @@ static int word_constant(void)
         return FALSE;
     }
 
-    if (!copy_name(&word->name, &name))
+    if (!copy_text(&word->name, name.start, name.length))
     {
         error("dictionary name space full");
         return FALSE;
@@ -2043,7 +2090,7 @@ static int word_variable(void)
         return FALSE;
     }
 
-    if (!copy_name(&word->name, &name))
+    if (!copy_text(&word->name, name.start, name.length))
     {
         error("dictionary name space full");
         return FALSE;
@@ -2121,7 +2168,7 @@ static int word_create(void)
         return FALSE;
     }
 
-    if (!copy_name(&word->name, &name))
+    if (!copy_text(&word->name, name.start, name.length))
     {
         error("dictionary name space full");
         return FALSE;
@@ -2286,6 +2333,33 @@ static int word_bl(void)
     return push((cell_t)' ');
 }
 
+static int word_dot_quote(void)
+{
+    Text text;
+    Instruction* instruction;
+
+    if (state != STATE_COMPILE)
+    {
+        error(".\" is compile-only");
+        return FALSE;
+    }
+
+    if (!next_string(&text))
+    {
+        return FALSE;
+    }
+
+    instruction = compile_instruction(OP_STRING);
+    if (instruction == NULL)
+    {
+        return FALSE;
+    }
+
+    instruction->arg.string = text;
+
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2368,6 +2442,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("char"), word_char, 0);
     add_builtin(TEXT_LITERAL("[char]"), word_bracket_char, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("bl"), word_bl, 0);
+    add_builtin(TEXT_LITERAL(".\""), word_dot_quote, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)

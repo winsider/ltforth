@@ -1,0 +1,2 @@
+- use common string space for strings and names.
+- 
