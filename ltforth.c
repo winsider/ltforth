@@ -20,6 +20,7 @@
 #define WORDS_PER_LINE 4
 #define DATA_SPACE_SIZE 4096
 #define CELL_SIZE ((idx_t)sizeof(cell_t))
+#define CELL_FMT "%ld"
 
 #define WORD_FLAG_IMMEDIATE  0x01
 
@@ -50,8 +51,8 @@ typedef struct Word Word;
 
 typedef int (*word_func_t)(void);
 
-typedef int cell_t;
-typedef unsigned ucell_t;
+typedef long cell_t;
+typedef unsigned long ucell_t;
 typedef unsigned char byte_t;
 typedef size_t idx_t;
 typedef unsigned char word_flags_t;
@@ -1102,7 +1103,7 @@ static int word_dot(void)
     cell_t value;
     REQUIRE_STACK(1);
     POP_UNCHECKED(value);
-    printf("%d ", value);
+    printf(CELL_FMT " ", value);
     return TRUE;
 }
 
@@ -1158,7 +1159,7 @@ static int word_dots(void)
     printf("<%u> ", (unsigned)dsp);
     for (i = 0; i < dsp; ++i)
     {
-        printf("%d ", data_stack[i]);
+        printf(CELL_FMT " ", data_stack[i]);
     }
     return TRUE;
 }
@@ -1347,7 +1348,7 @@ static int word_see(void)
     if (word_is_constant(word))
     {
         print_text(&word->name);
-        printf(" is constant %d\n", word->impl.constant);
+        printf(" is constant " CELL_FMT "\n", word->impl.constant);
         return TRUE;
     }
 
@@ -1392,7 +1393,7 @@ static int word_see(void)
                 break;
 
             case OP_LIT:
-                printf("%d", instruction->arg.literal);
+                printf(CELL_FMT, instruction->arg.literal);
                 break;
 
             case OP_BRANCH:
@@ -1712,7 +1713,7 @@ static int word_dot_rs(void)
 
     for (i = 0; i < rsp; ++i)
     {
-        printf("%d ", return_stack[i]);
+        printf(CELL_FMT " ", return_stack[i]);
     }
 
     putchar('\n');
@@ -2144,7 +2145,7 @@ static int word_question(void)
         return FALSE;
     }
 
-    printf("%d ", read_cell(address));
+    printf(CELL_FMT " ", read_cell(address));
     return TRUE;
 }
 
@@ -2360,6 +2361,38 @@ static int word_dot_quote(void)
     return TRUE;
 }
 
+static int word_tick(void)
+{
+    Token name;
+    Word* word;
+
+    if (!next_token(&name))
+    {
+        error("expected word name after tick");
+        return FALSE;
+    }
+
+    word = find_word(&name);
+    if (word == NULL)
+    {
+        error("unknown word");
+        return FALSE;
+    }
+
+    return push((cell_t)(ucell_t)word);
+}
+
+static int word_execute(void)
+{
+    Word* word;
+
+    REQUIRE_STACK(1);
+
+    word = (Word*)(ucell_t)data_stack[--dsp];
+
+    return execute_word(word);
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2443,6 +2476,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("[char]"), word_bracket_char, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("bl"), word_bl, 0);
     add_builtin(TEXT_LITERAL(".\""), word_dot_quote, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("'"),       word_tick,    0);
+    add_builtin(TEXT_LITERAL("execute"), word_execute, 0);
 }
 
 static int process_input_buffer(void)
