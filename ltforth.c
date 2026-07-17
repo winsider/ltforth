@@ -514,28 +514,56 @@ static int parse_number(const Token* token, cell_t* value)
     return TRUE;
 }
 
-static void skip_ignored()
+static int skip_ignored(void)
 {
-    for (;;)
+    int skipped;
+
+    do
     {
-        // skip whitespace
-        while (isspace((unsigned char)input_buffer[tokeniser_pos]))
+        skipped = FALSE;
+
+        while (has_more_input() &&
+               isspace((unsigned char)input_buffer[tokeniser_pos]))
         {
             ++tokeniser_pos;
+            skipped = TRUE;
         }
 
-        // skip comment
         if (input_buffer[tokeniser_pos] == '\\')
         {
-            do
+            while (has_more_input() &&
+                   input_buffer[tokeniser_pos] != '\n')
             {
-                tokeniser_pos++;
-            } while (input_buffer[tokeniser_pos] != '\n' &&
-                     input_buffer[tokeniser_pos] != '\0');
-            continue;
+                ++tokeniser_pos;
+            }
+
+            skipped = TRUE;
         }
-        break;
-    }
+
+        if (input_buffer[tokeniser_pos] == '(')
+        {
+            ++tokeniser_pos;
+
+            while (has_more_input() &&
+                   input_buffer[tokeniser_pos] != ')')
+            {
+                ++tokeniser_pos;
+            }
+
+            /* Parenthesis comments are single-line comments in this implementation. */
+            if (!has_more_input())
+            {
+                error("unclosed comment");
+                return FALSE;
+            }
+
+            ++tokeniser_pos;
+            skipped = TRUE;
+        }
+
+    } while (skipped);
+
+    return TRUE;
 }
 
 static Instruction* compile_instruction(opcode_t op)
@@ -955,7 +983,11 @@ static int process_token(const Token* token)
 
 static int next_token(Token* out)
 {
-    skip_ignored();
+    if (!skip_ignored())
+    {
+        return FALSE;
+    }
+
     if (!has_more_input())
     {
         return FALSE;
@@ -964,11 +996,12 @@ static int next_token(Token* out)
     out->start = input_buffer + tokeniser_pos;
     out->length = 0;
 
-    do
+    while (has_more_input() &&
+           !isspace((unsigned char)input_buffer[tokeniser_pos]))
     {
-        tokeniser_pos++;
-        out->length++;
-    } while (!isspace((unsigned char)input_buffer[tokeniser_pos]) && has_more_input());
+        ++tokeniser_pos;
+        ++out->length;
+    }
 
     return TRUE;
 }
