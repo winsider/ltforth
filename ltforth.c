@@ -514,6 +514,11 @@ static int parse_number(const Token* token, cell_t* value)
     return TRUE;
 }
 
+static cell_t token_to_char(const Token* token)
+{
+    return (cell_t)(unsigned char)token->start[0];
+}
+
 static int skip_ignored(void)
 {
     int skipped;
@@ -2229,6 +2234,58 @@ static int word_does(void)
     return TRUE;
 }
 
+static int word_char(void)
+{
+    Token token;
+
+    if (!next_token(&token))
+    {
+        error("expected character after CHAR");
+        return FALSE;
+    }
+
+    if (token.length == 0)
+    {
+        error("empty character");
+        return FALSE;
+    }
+
+    return push(token_to_char(&token));
+}
+
+static int word_bracket_char(void)
+{
+    Token token;
+    cell_t value;
+
+    if (state != STATE_COMPILE)
+    {
+        error("[CHAR] is compile-only");
+        return FALSE;
+    }
+
+    if (!next_token(&token))
+    {
+        error("expected character after [CHAR]");
+        return FALSE;
+    }
+
+    if (token.length == 0)
+    {
+        error("empty character");
+        return FALSE;
+    }
+
+    value = token_to_char(&token);
+
+    return compile_literal(value);
+}
+
+static int word_bl(void)
+{
+    return push((cell_t)' ');
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2308,6 +2365,9 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("cell+"), word_cell_plus, 0);
     add_builtin(TEXT_LITERAL("dump"), word_dump, 0);
     add_builtin(TEXT_LITERAL("does>"), word_does, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("char"), word_char, 0);
+    add_builtin(TEXT_LITERAL("[char]"), word_bracket_char, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("bl"), word_bl, 0);
 }
 
 static int process_input_buffer(void)
