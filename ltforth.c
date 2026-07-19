@@ -2393,6 +2393,18 @@ static int word_execute(void)
     return execute_word(word);
 }
 
+static int word_left_bracket(void)
+{
+    state = STATE_INTERPRET;
+    return TRUE;
+}
+
+static int word_right_bracket(void)
+{
+    state = STATE_COMPILE;
+    return TRUE;
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2478,6 +2490,8 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL(".\""), word_dot_quote, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("'"),       word_tick,    0);
     add_builtin(TEXT_LITERAL("execute"), word_execute, 0);
+    add_builtin(TEXT_LITERAL("["), word_left_bracket, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("]"), word_right_bracket, 0);
 }
 
 static int process_input_buffer(void)
