@@ -2422,6 +2422,23 @@ static int word_literal(void)
     return compile_literal(value);
 }
 
+static int word_recurse(void)
+{
+    if (state != STATE_COMPILE)
+    {
+        error("RECURSE is compile-only");
+        return FALSE;
+    }
+
+    if (current_definition == NULL)
+    {
+        error("RECURSE outside definition");
+        return FALSE;
+    }
+
+    return compile_word(current_definition);
+}
+
 static int add_builtin(Token name,
                        word_func_t function,
                        word_flags_t flags)
@@ -2510,6 +2527,7 @@ static void init_dictionary(void)
     add_builtin(TEXT_LITERAL("["), word_left_bracket, WORD_FLAG_IMMEDIATE);
     add_builtin(TEXT_LITERAL("]"), word_right_bracket, 0);
     add_builtin(TEXT_LITERAL("literal"), word_literal, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_LITERAL("recurse"), word_recurse, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
