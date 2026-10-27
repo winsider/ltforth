@@ -1,27 +1,16 @@
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 /* CONSTANTS */
 #define VERSION "0.3.0"
-#define LINE_SIZE 128
 #define TRUE 1
 #define FALSE 0
-#define DATA_STACK_SIZE 64
-#define CONTROL_STACK_SIZE 16
-#define RETURN_STACK_SIZE 32
-//#define TEXT_SPACE_SIZE 4096
-#define TEXT_SPACE_SIZE 2048
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
-#define NO_BRANCH_TARGET ((idx_t)-1)
-#define DICTIONARY_WORDS 256
-#define INSTRUCTION_SPACE_SIZE 512
-#define WORDS_PER_LINE 4
-#define DATA_SPACE_SIZE 4096
+#define NO_BRANCH_TARGET ((idx_t)SIZE_MAX)
 #define CELL_SIZE ((idx_t)sizeof(cell_t))
-//#define CELL_FMT "%ld"
-#define CELL_FMT "%d"
 
 #define WORD_FLAG_IMMEDIATE  0x01
 
@@ -31,6 +20,46 @@
 #define WORD_TYPE_CONSTANT   0x30
 #define WORD_TYPE_DATA       0x40
 
+#if defined(__SCCZ80) || defined(__SDCC)
+#define TEXT_SPACE_SIZE 2048
+#endif
+
+#ifndef LINE_SIZE
+#define LINE_SIZE 128
+#endif
+
+#ifndef DATA_STACK_SIZE
+#define DATA_STACK_SIZE 64
+#endif
+
+#ifndef CONTROL_STACK_SIZE
+#define CONTROL_STACK_SIZE 16
+#endif
+
+#ifndef RETURN_STACK_SIZE
+#define RETURN_STACK_SIZE 32
+#endif
+
+#ifndef TEXT_SPACE_SIZE
+#define TEXT_SPACE_SIZE 4096
+#endif
+
+#ifndef DICTIONARY_WORDS
+#define DICTIONARY_WORDS 256
+#endif
+
+#ifndef INSTRUCTION_SPACE_SIZE
+#define INSTRUCTION_SPACE_SIZE 512
+#endif
+
+#ifndef WORDS_PER_LINE
+#define WORDS_PER_LINE 4
+#endif
+
+#ifndef DATA_SPACE_SIZE
+#define DATA_SPACE_SIZE 4096
+#endif
+
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #define STDIN_IS_INTERACTIVE() isatty(0)
@@ -39,6 +68,22 @@
 #endif
 
 /* TYPES */
+
+#if defined(__SCCZ80) || defined(__SDCC)
+typedef int cell_t;
+typedef unsigned int ucell_t;
+#define CELL_FMT "%d"
+#else
+typedef long cell_t;
+typedef unsigned long ucell_t;
+#define CELL_FMT "%ld"
+#endif
+
+typedef unsigned char byte_t;
+typedef size_t idx_t;
+typedef unsigned char word_flags_t;
+typedef ucell_t addr_t;
+
 typedef struct
 {
     const char* start;
@@ -51,15 +96,6 @@ typedef int (*word_fun_t)(void);
 typedef struct Word Word;
 
 typedef int (*word_func_t)(void);
-
-//typedef long cell_t;
-//typedef unsigned long ucell_t;
-typedef int cell_t;
-typedef unsigned int ucell_t;
-typedef unsigned char byte_t;
-typedef size_t idx_t;
-typedef unsigned char word_flags_t;
-typedef ucell_t addr_t;
 
 typedef enum
 {

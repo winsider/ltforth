@@ -3,4 +3,5 @@ project(ltforth C)
 
 set(CMAKE_C_STANDARD 99)
 
-add_executable(ltforth ltforth.c)
+add_executable(ltforth ltforth.c
+)

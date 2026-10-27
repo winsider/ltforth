@@ -1,0 +1,14 @@
+# Host build
+/ltforth
+
+# z88dk / ZX Spectrum build
+/ltforth-zx
+*.tap
+*.sym
+*.map
+
+# CMake
+cmake-build-*/
+
+# macOS
+.DS_Store
