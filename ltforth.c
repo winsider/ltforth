@@ -1,7 +1,6 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
-#include <arm/limits.h>
 
 /* CONSTANTS */
 #define VERSION "0.3.0"
@@ -11,7 +10,8 @@
 #define DATA_STACK_SIZE 64
 #define CONTROL_STACK_SIZE 16
 #define RETURN_STACK_SIZE 32
-#define TEXT_SPACE_SIZE 4096
+//#define TEXT_SPACE_SIZE 4096
+#define TEXT_SPACE_SIZE 2048
 #define FORTH_TRUE  ((cell_t)-1)
 #define FORTH_FALSE ((cell_t)0)
 #define NO_BRANCH_TARGET ((idx_t)-1)
@@ -20,7 +20,8 @@
 #define WORDS_PER_LINE 4
 #define DATA_SPACE_SIZE 4096
 #define CELL_SIZE ((idx_t)sizeof(cell_t))
-#define CELL_FMT "%ld"
+//#define CELL_FMT "%ld"
+#define CELL_FMT "%d"
 
 #define WORD_FLAG_IMMEDIATE  0x01
 
@@ -51,8 +52,10 @@ typedef struct Word Word;
 
 typedef int (*word_func_t)(void);
 
-typedef long cell_t;
-typedef unsigned long ucell_t;
+//typedef long cell_t;
+//typedef unsigned long ucell_t;
+typedef int cell_t;
+typedef unsigned int ucell_t;
 typedef unsigned char byte_t;
 typedef size_t idx_t;
 typedef unsigned char word_flags_t;
@@ -177,7 +180,7 @@ static Word* latest_created_word = NULL;
 
 /* MACRO FUNCTIONS */
 #define has_more_input() (input_buffer[tokeniser_pos]!='\0')
-#define TEXT_LITERAL(s) ((Token){ (s), sizeof(s) - 1 })
+#define TEXT_ARGS(s) (s), ((idx_t)(sizeof(s) - 1))
 #define PUSH_UNCHECKED(v) (data_stack[dsp++] = (v))
 #define POP_UNCHECKED(v)  ((v) = data_stack[--dsp])
 #define REQUIRE_STACK(n)                     \
@@ -250,6 +253,7 @@ static int push(cell_t value)
     return TRUE;
 }
 
+#if 0
 static int pop(cell_t* value)
 {
     REQUIRE_STACK(1);
@@ -280,6 +284,7 @@ static int rpop(cell_t* value)
     *value = return_stack[--rsp];
     return TRUE;
 }
+#endif
 
 static Instruction* allot_instruction(void)
 {
@@ -2439,20 +2444,19 @@ static int word_recurse(void)
     return compile_word(current_definition);
 }
 
-static int add_builtin(Token name,
-                       word_func_t function,
-                       word_flags_t flags)
+static int add_builtin(const char* name, idx_t length,
+                       word_func_t function, word_flags_t flags)
 {
     Word* word;
 
     word = allot_word();
     if (word == NULL)
     {
-        error("dictionary full");
         return FALSE;
     }
 
-    word->name = name;
+    word->name.start = name;
+    word->name.length = length;
     word->flags = WORD_TYPE_BUILTIN | flags;
     word->impl.builtin = function;
 
@@ -2461,73 +2465,73 @@ static int add_builtin(Token name,
 
 static void init_dictionary(void)
 {
-    add_builtin(TEXT_LITERAL("+"), word_add, 0);
-    add_builtin(TEXT_LITERAL("-"), word_sub, 0);
-    add_builtin(TEXT_LITERAL("*"), word_mul, 0);
-    add_builtin(TEXT_LITERAL("/"), word_div, 0);
-    add_builtin(TEXT_LITERAL("."), word_dot, 0);
-    add_builtin(TEXT_LITERAL("dup"), word_dup, 0);
-    add_builtin(TEXT_LITERAL("drop"), word_drop, 0);
-    add_builtin(TEXT_LITERAL("0="), word_ze, 0);
-    add_builtin(TEXT_LITERAL("depth"), word_dep, 0);
-    add_builtin(TEXT_LITERAL("cr"), word_cr, 0);;
-    add_builtin(TEXT_LITERAL("emit"), word_emit, 0);;
-    add_builtin(TEXT_LITERAL("swap"), word_swap, 0);
-    add_builtin(TEXT_LITERAL("over"), word_over, 0);
-    add_builtin(TEXT_LITERAL("rot"), word_rot, 0);;
-    add_builtin(TEXT_LITERAL(".s"), word_dots, 0);;
-    add_builtin(TEXT_LITERAL("="), word_eq, 0);
-    add_builtin(TEXT_LITERAL("<"), word_lt, 0);
-    add_builtin(TEXT_LITERAL(">"), word_gt, 0);
-    add_builtin(TEXT_LITERAL(":"), word_colon, 0);
-    add_builtin(TEXT_LITERAL(";"), word_semicolon, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("words"), word_words, 0);
-    add_builtin(TEXT_LITERAL("see"), word_see, 0);
-    add_builtin(TEXT_LITERAL("if"), word_if, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("else"), word_else, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("then"), word_then, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("begin"), word_begin, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("until"), word_until, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("while"), word_while, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("repeat"), word_repeat, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL(">r"), word_to_r, 0);
-    add_builtin(TEXT_LITERAL("r>"), word_from_r, 0);
-    add_builtin(TEXT_LITERAL("r@"), word_r_fetch, 0);
-    add_builtin(TEXT_LITERAL(".rs"), word_dot_rs, 0);
-    add_builtin(TEXT_LITERAL("do"), word_do, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("loop"), word_loop, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("i"), word_i, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("j"), word_j, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("+loop"), word_plus_loop, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("leave"), word_leave, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("here"),  word_here,   0);
-    add_builtin(TEXT_LITERAL("allot"), word_allot,  0);
-    add_builtin(TEXT_LITERAL(","),     word_comma,  0);
-    add_builtin(TEXT_LITERAL("@"),     word_fetch,  0);
-    add_builtin(TEXT_LITERAL("!"),     word_store,  0);
-    add_builtin(TEXT_LITERAL("c@"),    word_cfetch, 0);
-    add_builtin(TEXT_LITERAL("c!"),    word_cstore, 0);
-    add_builtin(TEXT_LITERAL("constant"), word_constant, 0);
-    add_builtin(TEXT_LITERAL("variable"), word_variable, 0);
-    add_builtin(TEXT_LITERAL("+!"), word_plus_store, 0);
-    add_builtin(TEXT_LITERAL("?"), word_question, 0);
-    add_builtin(TEXT_LITERAL("create"), word_create, 0);
-    add_builtin(TEXT_LITERAL("c,"), word_ccomma, 0);
-    add_builtin(TEXT_LITERAL("cell"),  word_cell,      0);
-    add_builtin(TEXT_LITERAL("cells"), word_cells,     0);
-    add_builtin(TEXT_LITERAL("cell+"), word_cell_plus, 0);
-    add_builtin(TEXT_LITERAL("dump"), word_dump, 0);
-    add_builtin(TEXT_LITERAL("does>"), word_does, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("char"), word_char, 0);
-    add_builtin(TEXT_LITERAL("[char]"), word_bracket_char, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("bl"), word_bl, 0);
-    add_builtin(TEXT_LITERAL(".\""), word_dot_quote, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("'"),       word_tick,    0);
-    add_builtin(TEXT_LITERAL("execute"), word_execute, 0);
-    add_builtin(TEXT_LITERAL("["), word_left_bracket, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("]"), word_right_bracket, 0);
-    add_builtin(TEXT_LITERAL("literal"), word_literal, WORD_FLAG_IMMEDIATE);
-    add_builtin(TEXT_LITERAL("recurse"), word_recurse, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("+"), word_add, 0);
+    add_builtin(TEXT_ARGS("-"), word_sub, 0);
+    add_builtin(TEXT_ARGS("*"), word_mul, 0);
+    add_builtin(TEXT_ARGS("/"), word_div, 0);
+    add_builtin(TEXT_ARGS("."), word_dot, 0);
+    add_builtin(TEXT_ARGS("dup"), word_dup, 0);
+    add_builtin(TEXT_ARGS("drop"), word_drop, 0);
+    add_builtin(TEXT_ARGS("0="), word_ze, 0);
+    add_builtin(TEXT_ARGS("depth"), word_dep, 0);
+    add_builtin(TEXT_ARGS("cr"), word_cr, 0);;
+    add_builtin(TEXT_ARGS("emit"), word_emit, 0);;
+    add_builtin(TEXT_ARGS("swap"), word_swap, 0);
+    add_builtin(TEXT_ARGS("over"), word_over, 0);
+    add_builtin(TEXT_ARGS("rot"), word_rot, 0);;
+    add_builtin(TEXT_ARGS(".s"), word_dots, 0);;
+    add_builtin(TEXT_ARGS("="), word_eq, 0);
+    add_builtin(TEXT_ARGS("<"), word_lt, 0);
+    add_builtin(TEXT_ARGS(">"), word_gt, 0);
+    add_builtin(TEXT_ARGS(":"), word_colon, 0);
+    add_builtin(TEXT_ARGS(";"), word_semicolon, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("words"), word_words, 0);
+    add_builtin(TEXT_ARGS("see"), word_see, 0);
+    add_builtin(TEXT_ARGS("if"), word_if, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("else"), word_else, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("then"), word_then, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("begin"), word_begin, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("until"), word_until, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("while"), word_while, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("repeat"), word_repeat, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS(">r"), word_to_r, 0);
+    add_builtin(TEXT_ARGS("r>"), word_from_r, 0);
+    add_builtin(TEXT_ARGS("r@"), word_r_fetch, 0);
+    add_builtin(TEXT_ARGS(".rs"), word_dot_rs, 0);
+    add_builtin(TEXT_ARGS("do"), word_do, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("loop"), word_loop, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("i"), word_i, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("j"), word_j, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("+loop"), word_plus_loop, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("leave"), word_leave, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("here"),  word_here,   0);
+    add_builtin(TEXT_ARGS("allot"), word_allot,  0);
+    add_builtin(TEXT_ARGS(","),     word_comma,  0);
+    add_builtin(TEXT_ARGS("@"),     word_fetch,  0);
+    add_builtin(TEXT_ARGS("!"),     word_store,  0);
+    add_builtin(TEXT_ARGS("c@"),    word_cfetch, 0);
+    add_builtin(TEXT_ARGS("c!"),    word_cstore, 0);
+    add_builtin(TEXT_ARGS("constant"), word_constant, 0);
+    add_builtin(TEXT_ARGS("variable"), word_variable, 0);
+    add_builtin(TEXT_ARGS("+!"), word_plus_store, 0);
+    add_builtin(TEXT_ARGS("?"), word_question, 0);
+    add_builtin(TEXT_ARGS("create"), word_create, 0);
+    add_builtin(TEXT_ARGS("c,"), word_ccomma, 0);
+    add_builtin(TEXT_ARGS("cell"),  word_cell,      0);
+    add_builtin(TEXT_ARGS("cells"), word_cells,     0);
+    add_builtin(TEXT_ARGS("cell+"), word_cell_plus, 0);
+    add_builtin(TEXT_ARGS("dump"), word_dump, 0);
+    add_builtin(TEXT_ARGS("does>"), word_does, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("char"), word_char, 0);
+    add_builtin(TEXT_ARGS("[char]"), word_bracket_char, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("bl"), word_bl, 0);
+    add_builtin(TEXT_ARGS(".\""), word_dot_quote, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("'"),       word_tick,    0);
+    add_builtin(TEXT_ARGS("execute"), word_execute, 0);
+    add_builtin(TEXT_ARGS("["), word_left_bracket, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("]"), word_right_bracket, 0);
+    add_builtin(TEXT_ARGS("literal"), word_literal, WORD_FLAG_IMMEDIATE);
+    add_builtin(TEXT_ARGS("recurse"), word_recurse, WORD_FLAG_IMMEDIATE);
 }
 
 static int process_input_buffer(void)
